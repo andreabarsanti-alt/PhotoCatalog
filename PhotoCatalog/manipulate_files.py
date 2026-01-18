@@ -61,7 +61,9 @@ def organize_by_date(
         date_keys: List[str],
         dry_run: bool = False,
         output_catalog: Optional[str] = None,
-        log_file: Optional[str] = None
+        log_file: Optional[str] = None,
+        use_original_filename: bool = False,
+        copy_mode: bool = False
 ) -> None:
     """
     Organize files by date into a year/month/day folder structure.
@@ -73,6 +75,8 @@ def organize_by_date(
         dry_run: If True, only print what would be done without moving files
         output_catalog: Optional path to write updated JSON catalog with new paths
         log_file: Optional path to write log output to a file
+        use_original_filename: If True, rename files using OriginalFilenameFromPhotos field when moving
+        copy_mode: If True, copy files instead of moving them
 
     Supported date formats:
         - "2022:03:03 15:21:38"
@@ -165,7 +169,10 @@ def organize_by_date(
             continue
 
         # Build destination path
-        filename = os.path.basename(source_file)
+        if use_original_filename and item.get('OriginalFilenameFromPhotos'):
+            filename = item['OriginalFilenameFromPhotos']
+        else:
+            filename = os.path.basename(source_file)
         dest_path = os.path.join(dest_folder, filename)
 
         # Check if destination already exists
@@ -175,8 +182,9 @@ def organize_by_date(
             continue
 
         if dry_run:
-            log(f"  Would move: {source_file}")
-            log(f"         to: {dest_path}")
+            operation = "copy" if copy_mode else "move"
+            log(f"  Would {operation}: {source_file}")
+            log(f"             to: {dest_path}")
             if year is None:
                 stats['moved_no_date'] += 1
             else:
@@ -184,11 +192,15 @@ def organize_by_date(
             # Update item with new paths
             updated_item['SourceFile'] = dest_path
             updated_item['Directory'] = dest_folder
+            updated_item['FileName'] = filename
         else:
-            # Create destination folder and move file
+            # Create destination folder and move/copy file
             try:
                 os.makedirs(dest_folder, exist_ok=True)
-                shutil.move(source_file, dest_path)
+                if copy_mode:
+                    shutil.copy2(source_file, dest_path)
+                else:
+                    shutil.move(source_file, dest_path)
                 if year is None:
                     stats['moved_no_date'] += 1
                 else:
@@ -196,23 +208,26 @@ def organize_by_date(
                 # Update item with new paths
                 updated_item['SourceFile'] = dest_path
                 updated_item['Directory'] = dest_folder
+                updated_item['FileName'] = filename
             except Exception as e:
                 stats['errors'] += 1
-                stats['error_details'].append(f"Error moving {source_file} to {dest_path}: {e}")
+                operation = "copying" if copy_mode else "moving"
+                stats['error_details'].append(f"Error {operation} {source_file} to {dest_path}: {e}")
 
         updated_items.append(updated_item)
 
     # Print summary
+    operation_past = "copied" if copy_mode else "moved"
     log()
     log("=" * 60)
     if dry_run:
-        log("DRY RUN RESULTS (no files were moved)")
+        log(f"DRY RUN RESULTS (no files were {operation_past})")
     else:
         log("ORGANIZATION RESULTS")
     log("=" * 60)
     log(f"Total items: {stats['total_items']}")
-    log(f"Files {'would be ' if dry_run else ''}moved: {stats['moved']}")
-    log(f"Files {'would be ' if dry_run else ''}moved to NoDate: {stats['moved_no_date']}")
+    log(f"Files {'would be ' + operation_past if dry_run else operation_past}: {stats['moved']}")
+    log(f"Files {'would be ' + operation_past if dry_run else operation_past} to NoDate: {stats['moved_no_date']}")
     log(f"Skipped (missing SourceFile): {stats['skipped_missing_source']}")
     if not dry_run:
         log(f"Skipped (file not found): {stats['skipped_file_not_found']}")

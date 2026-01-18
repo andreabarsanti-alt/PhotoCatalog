@@ -58,14 +58,15 @@ if __name__ == "__main__":
     #                match_key=["MoviesDuplicateID"])
 
     # check_image_files(DuplicateCleanedCatalog)
-    # organize_by_date( DuplicateCleanedCatalog, "/Volumes/CARTIER_BRESSON (BCKP)/Daniela/Photos_Organized",
-    #                   ["CreateDate"], dry_run = False, output_catalog= OrganizedCatalog,
-    #                   log_file="/Users/andrea/Downloads/move_organize_log.txt",)
+    organize_by_date( "/Users/andrea/Downloads/MacPhotos.json", "/Users/andrea/Downloads/Photos_Organized",
+                      ["CreateDate"], dry_run = True, output_catalog= OrganizedCatalog,
+                      log_file="/Users/andrea/Downloads/reorganize_log.txt",
+                      use_original_filename=True, copy_mode=True)
 
-    create_catalog_from_mac_photos(
-        "/Users/andrea/Downloads/MacPhotos.json",
-    "/Users/andrea/Pictures/Libreria di Foto.photoslibrary",
-        limit = 10,
-        add_hash = True
-    )
+    # create_catalog_from_mac_photos(
+    #     "/Users/andrea/Downloads/MacPhotos.json",
+    #     MacPhotoLibrary,
+    #     limit = 50,
+    #     add_hash = True
+    # )
 
