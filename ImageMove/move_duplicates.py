@@ -7,7 +7,7 @@ import shutil
 def move_duplicates(input_json, duplicates_dir="Duplicates", preferred_paths=None,
                     keep_strategy="keep_shorter_name", dry_run=False, log_file=None,
                     update_catalog=False, output_catalog=None,
-                    match_key="DuplicateMatch"):
+                    match_key="DuplicateMatch", use_original_filename=False):
     """
     Process duplicate groups and move files to a Duplicates directory.
 
@@ -31,6 +31,7 @@ def move_duplicates(input_json, duplicates_dir="Duplicates", preferred_paths=Non
         output_catalog: Output catalog filename (default: input_json with "_cleaned" suffix)
         match_key: Name of the key(s) containing match IDs (string or list of strings, default: "DuplicateMatch")
                    If a list is provided, items must match on ANY of the keys to be grouped
+        use_original_filename: If True, rename files using OriginalFilenameFromPhotos field when moving
     """
 
     # Helper function to print and optionally log
@@ -62,6 +63,17 @@ def move_duplicates(input_json, duplicates_dir="Duplicates", preferred_paths=Non
         # Convert to DataFrame
         df = pd.DataFrame(data)
         log_print(f"Loaded {len(df)} images", log_handle)
+
+        # Create lookup for original filenames if option is enabled
+        original_filename_map = {}
+        if use_original_filename:
+            if 'OriginalFilenameFromPhotos' in df.columns:
+                for _, row in df.iterrows():
+                    if pd.notna(row.get('OriginalFilenameFromPhotos')) and pd.notna(row.get('SourceFile')):
+                        original_filename_map[row['SourceFile']] = row['OriginalFilenameFromPhotos']
+                log_print(f"Found {len(original_filename_map)} files with OriginalFilenameFromPhotos", log_handle)
+            else:
+                log_print("Warning: use_original_filename=True but OriginalFilenameFromPhotos column not found", log_handle)
 
         # Handle match_key as string or list
         is_multi_key = isinstance(match_key, list)
@@ -253,10 +265,15 @@ def move_duplicates(input_json, duplicates_dir="Duplicates", preferred_paths=Non
 
             # Move the files
             for source_file in files_to_move:
+                # Determine destination filename
+                if use_original_filename and source_file in original_filename_map:
+                    filename = original_filename_map[source_file]
+                else:
+                    filename = os.path.basename(source_file)
+
                 if dry_run:
                     # In dry_run mode, always count files for catalog update
                     if os.path.exists(source_file):
-                        filename = os.path.basename(source_file)
                         destination = os.path.join(duplicates_dir, filename)
                         log_print(f"  [DRY RUN] Would move: {source_file} -> {destination}", log_handle)
                         total_moved += 1
@@ -265,8 +282,6 @@ def move_duplicates(input_json, duplicates_dir="Duplicates", preferred_paths=Non
                         total_not_found += 1
                     moved_files.append(source_file)
                 elif os.path.exists(source_file):
-                    # Get the filename
-                    filename = os.path.basename(source_file)
                     destination = os.path.join(duplicates_dir, filename)
 
                     # Handle filename conflicts
