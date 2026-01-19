@@ -10,9 +10,21 @@ import cv2
 import numpy as np
 from PIL import Image
 import pillow_heif
+import math
 
 # Register HEIF opener with PIL
 pillow_heif.register_heif_opener()
+
+
+def _clean_item(item):
+    """Remove keys with None or NaN values from an item."""
+    return {k: v for k, v in item.items()
+            if v is not None and not (isinstance(v, float) and math.isnan(v))}
+
+
+def _clean_catalog(data):
+    """Remove None/NaN values from all items in a catalog."""
+    return [_clean_item(item) for item in data]
 
 
 def _load_image(image_path, grayscale=False):
@@ -379,7 +391,7 @@ def validate_groups_by_comparison(input_json, output_json,
         # Save updated catalog
         print(f"\nWriting validated catalog to {output_json}...")
         with open(output_json, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+            json.dump(_clean_catalog(data), f, indent=2)
 
         print("Done!")
 

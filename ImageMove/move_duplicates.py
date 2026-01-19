@@ -2,6 +2,18 @@ import pandas as pd
 import json
 import os
 import shutil
+import math
+
+
+def _clean_item(item):
+    """Remove keys with None or NaN values from an item."""
+    return {k: v for k, v in item.items()
+            if v is not None and not (isinstance(v, float) and math.isnan(v))}
+
+
+def _clean_catalog(data):
+    """Remove None/NaN values from all items in a catalog."""
+    return [_clean_item(item) for item in data]
 
 
 def move_duplicates(input_json, duplicates_dir="Duplicates", preferred_paths=None,
@@ -378,7 +390,7 @@ def move_duplicates(input_json, duplicates_dir="Duplicates", preferred_paths=Non
                 for record in df_cleaned.to_dict('records')
             ]
             with open(output_catalog, 'w', encoding='utf-8') as f:
-                json.dump(result, f, indent=2)
+                json.dump(_clean_catalog(result), f, indent=2)
             log_print(f"Saved cleaned catalog to: {output_catalog}", log_handle)
 
     except FileNotFoundError:

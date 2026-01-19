@@ -1,8 +1,20 @@
 import json
 import os
 import shutil
+import math
 from datetime import datetime
 from typing import List, Optional, Tuple
+
+
+def _clean_item(item):
+    """Remove keys with None or NaN values from an item."""
+    return {k: v for k, v in item.items()
+            if v is not None and not (isinstance(v, float) and math.isnan(v))}
+
+
+def _clean_catalog(data):
+    """Remove None/NaN values from all items in a catalog."""
+    return [_clean_item(item) for item in data]
 
 
 def parse_date(date_value: str) -> Tuple[str, str, str]:
@@ -245,7 +257,7 @@ def organize_by_date(
         log()
         log(f"Writing updated catalog to {output_catalog}...")
         with open(output_catalog, 'w', encoding='utf-8') as f:
-            json.dump(updated_items, f, indent=2, ensure_ascii=False)
+            json.dump(_clean_catalog(updated_items), f, indent=2, ensure_ascii=False)
         log(f"Catalog written with {len(updated_items)} items")
 
     # Close log file if opened

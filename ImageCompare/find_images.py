@@ -1,6 +1,18 @@
 import pandas as pd
 import json
 import numpy as np
+import math
+
+
+def _clean_item(item):
+    """Remove keys with None or NaN values from an item."""
+    return {k: v for k, v in item.items()
+            if v is not None and not (isinstance(v, float) and math.isnan(v))}
+
+
+def _clean_catalog(data):
+    """Remove None/NaN values from all items in a catalog."""
+    return [_clean_item(item) for item in data]
 
 
 def find_images(input_json, output_json,
@@ -34,7 +46,7 @@ def find_images(input_json, output_json,
 
     # Set defaults
     if exact_match_keys is None:
-        exact_match_keys = ["ImageWidth", "ImageHeight", "FileSize"]
+        exact_match_keys = []
     if string_match_keys is None:
         string_match_keys = []
     if fuzzy_match_keys is None:
@@ -116,7 +128,7 @@ def find_images(input_json, output_json,
             # Save catalog as-is
             result = df.to_dict('records')
             with open(output_json, 'w', encoding='utf-8') as f:
-                json.dump(result, f, indent=2)
+                json.dump(_clean_catalog(result), f, indent=2)
             return
 
         # STEP 1: Exact matching
@@ -166,7 +178,7 @@ def find_images(input_json, output_json,
                 print("No valid images after validation")
                 result = df.to_dict('records')
                 with open(output_json, 'w', encoding='utf-8') as f:
-                    json.dump(result, f, indent=2)
+                    json.dump(_clean_catalog(result), f, indent=2)
                 return
 
             # Create exact match key
@@ -192,7 +204,7 @@ def find_images(input_json, output_json,
             print("No duplicate groups found")
             result = df.to_dict('records')
             with open(output_json, 'w', encoding='utf-8') as f:
-                json.dump(result, f, indent=2)
+                json.dump(_clean_catalog(result), f, indent=2)
             return
 
         # STEP 2: Fuzzy matching
@@ -253,7 +265,7 @@ def find_images(input_json, output_json,
             print("No duplicate groups after fuzzy matching")
             result = df.to_dict('records')
             with open(output_json, 'w', encoding='utf-8') as f:
-                json.dump(result, f, indent=2)
+                json.dump(_clean_catalog(result), f, indent=2)
             return
 
         # STEP 3: Date matching
@@ -265,7 +277,7 @@ def find_images(input_json, output_json,
             print("No duplicate groups after date matching")
             result = df.to_dict('records')
             with open(output_json, 'w', encoding='utf-8') as f:
-                json.dump(result, f, indent=2)
+                json.dump(_clean_catalog(result), f, indent=2)
             return
 
         # STEP 4: Assign matchID
@@ -298,7 +310,7 @@ def find_images(input_json, output_json,
         print(f"{'=' * 60}")
 
         total_matched = df[match_id_key].notna().sum()
-        num_groups = df[match_id_key].nunique() - 1  # Exclude None
+        num_groups = df[match_id_key].nunique()  # nunique() excludes NaN by default
 
         print(f"Total images with matches: {total_matched}")
         print(f"Number of match groups: {num_groups}")
@@ -347,7 +359,7 @@ def find_images(input_json, output_json,
             cleaned_result.append(cleaned_record)
 
         with open(output_json, 'w', encoding='utf-8') as f:
-            json.dump(cleaned_result, f, indent=2)
+            json.dump(_clean_catalog(cleaned_result), f, indent=2)
 
         print("Done!")
 

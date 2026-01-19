@@ -2,71 +2,75 @@ from PhotoCatalog import *
 from ImageCompare import *
 from ImageMove import *
 from OsxphotosWrap import *
+from remove_files import remove_files
 
-MacPhotoLibrary ="/Volumes/CARTIER_BRESSON (BCKP)/Daniela/Libreria di Foto - Video Backup Extra.photoslibrary"
+PhotoCatalogStart = "/Users/andrea/Downloads/PhotoCatalog.json"
 
-ExportDir = "/Volumes/CARTIER_BRESSON (BCKP)/Daniela/VideoExport"
-ImagesDir = [ExportDir]
+TempCatalog =  "/Users/andrea/Downloads/PhotoCatalog.Temp.json"
 
-PhotoCatalog = '/Users/andrea/Downloads/PhotoCatalog.json'
-PhotoCatalogMoreVideos = "/Users/andrea/Downloads/PhotoCatalog.Videos.json"
-PhotoCatalogUpdated = "/Users/andrea/Downloads/PhotoCatalog.Updated.json"
-DuplicateTaggedCatalog = "/Users/andrea/Downloads/PhotoCatalog.Duplicates.json"
-DuplicateTaggedLiteCatalog = "/Users/andrea/Downloads/PhotoCatalog.Duplicates.Lite.json"
-DuplicateCleanedCatalog  = "/Users/andrea/Downloads/PhotoCatalog.Duplicates.Cleaned.json"
-OrganizedCatalog   = "/Users/andrea/Downloads/PhotoCatalog.Organized.json"
+DuplicateTaggedCatalog = "/Users/andrea/Downloads/PhotoCatalog.Duplicate.json"
+
+TrashFolder = "/Volumes/CARTIER_BRESSON (BCKP)/Daniela/Trash"
 
 if __name__ == "__main__":
-    # export_photos(
-    #     library_path = MacPhotoLibrary,
-    #     target_directory = "/Volumes/CARTIER_BRESSON (BCKP)/Daniela/VideoExport",
-    #     media_type = "movies",
-    #     dry_run = False
-    # )
-    #
-    # extract_all_metadata(ImagesDir, PhotoCatalogMoreVideos, add_hash=True, hash_key="imageHash")
-    #
-    # merge_catalogs([PhotoCatalog, PhotoCatalogMoreVideos], PhotoCatalogUpdated, main_key="SourceFile")
-    #
 
-    # To Find Exact Duplicates, including FileSize and Hash
-    # find_images(input_json=PhotoCatalogUpdated, output_json=DuplicateTaggedCatalog,
-    #             filter_keys=None, filter_keys_value=None,
-    #             filter_string_keys=["FileType"], filter_string_keys_value=[["MOV","MP4"]],filter_string_mode=["exact"],
-    #             exact_match_keys=["FileSize"], fuzzy_match_keys=None,
-    #             string_match_keys=["FileType", "CreateDate"], match_id_key="MoviesDuplicateID")
+    if (False):
+        rename_key(PhotoCatalogStart, TempCatalog, "imageHash", "ImageHash")
 
-    # To check the results
-    # filter_catalog(DuplicateTaggedCatalog, DuplicateTaggedLiteCatalog, ["SourceFile", "MoviesDuplicateID"])
-    # open_files_by_key(DuplicateTaggedLiteCatalog, "MoviesDuplicateID", 1254, source_key="SourceFile")
+    if (False):
+        find_images(input_json=PhotoCatalogStart, output_json=TempCatalog,
+                filter_keys=None, filter_keys_value=None,
+                filter_string_keys=["FileType","Directory"],
+                filter_string_keys_value=[["MOV","MP4"],["NoDate"]],
+                filter_string_mode=["not_contains","not_contains"],
+                exact_match_keys=[], fuzzy_match_keys=None,
+                string_match_keys=["FileType", "CreateDate", "ImageHash"],
+                match_id_key="PhotosDateHashID")
 
-    # To Find Exact Duplicates, same Hash (same image) but slightly different filesize
-    # find_images(input_json=PhotoCatalog, output_json=DuplicateTaggedCatalog,
-    #             filter_keys=None, filter_keys_value=None,
-    #             filter_string_keys=["DuplicateMatchID", "FileType"], filter_string_keys_value=[[None],["AAE"]],
-    #             filter_string_mode=["exact","not_contains"],
-    #             exact_match_keys=["ImageWidth", "ImageHeight"], fuzzy_match_keys=["FileSize"],fuzzy_tolerance=0.0001,
-    #             string_match_keys=["FileType", "imageHash"], check_date=True, match_id_key="CopiesMatchID")
+    if (False):
+        open_files_by_key(TempCatalog, "PhotosDateHashID",
+                          1332, source_key="SourceFile")
 
-    # To check the results
-    # open_files_by_key(DuplicateTaggedCatalog, "CopiesMatchID", 2934, source_key="SourceFile")
+    if (False):
+        compare_files_by_key(TempCatalog, "PhotosDateHashID",
+                             359, verbose=True, ignore_keys=None)
 
-    # move_duplicates(DuplicateTaggedCatalog, duplicates_dir="/Volumes/CARTIER_BRESSON (BCKP)/Daniela/Duplicates",
-    #                dry_run=True, preferred_paths=["iPhotos","originals"], keep_strategy="keep_shorter_name",
-    #                log_file="/Users/andrea/Downloads/move_duplicate_log.txt",
-    #                update_catalog=True, output_catalog=DuplicateCleanedCatalog,
-    #                match_key=["MoviesDuplicateID"])
+    if (False):
+        compare_mse("/Volumes/CARTIER_BRESSON (BCKP)/Daniela/Photos_Organized/2019/09/28/69BE0DA7-89CC-432F-8AE0-4BDF3ACFB6F6.jpeg",
+                    "/Volumes/CARTIER_BRESSON (BCKP)/Daniela/Photos_Organized/2019/09/28/177827C2-DEED-4C98-961E-BC92665E3125.jpeg",
+                    threshold=0, verbose=True)
 
-    # check_image_files(DuplicateCleanedCatalog)
-    organize_by_date( "/Users/andrea/Downloads/MacPhotos.json", "/Users/andrea/Downloads/Photos_Organized",
-                      ["CreateDate"], dry_run = True, output_catalog= OrganizedCatalog,
-                      log_file="/Users/andrea/Downloads/reorganize_log.txt",
-                      use_original_filename=True, copy_mode=True)
+    if (False):
+        compare_ssim("/Volumes/CARTIER_BRESSON (BCKP)/Daniela/Photos_Organized/2019/09/28/69BE0DA7-89CC-432F-8AE0-4BDF3ACFB6F6.jpeg",
+                    "/Volumes/CARTIER_BRESSON (BCKP)/Daniela/Photos_Organized/2019/09/28/177827C2-DEED-4C98-961E-BC92665E3125.jpeg",
+                    threshold=1, verbose=True)
 
-    # create_catalog_from_mac_photos(
-    #     "/Users/andrea/Downloads/MacPhotos.json",
-    #     MacPhotoLibrary,
-    #     limit = 50,
-    #     add_hash = True
-    # )
+    if (True):
+        move_duplicates(input_json=TempCatalog,
+                        duplicates_dir="/Volumes/CARTIER_BRESSON (BCKP)/Daniela/Duplicates",
+                        preferred_paths=None,
+                        keep_strategy="keep_shorter_name",
+                        dry_run=False,
+                        log_file="/Users/andrea/Downloads/log_file.txt",
+                        update_catalog=True,
+                        output_catalog=DuplicateTaggedCatalog,
+                        match_key="PhotosDateHashID", use_original_filename=True)
+
+
+    if (False):
+        get_unique_values(TempCatalog, key_name="AAE_Files", sort=True, show_counts=True)
+
+    if (False):
+        find_images(input_json=TempCatalog, output_json=DuplicateTaggedCatalog,
+                filter_keys=None, filter_keys_value=None,
+                filter_string_keys=["FileType"],
+                filter_string_keys_value=[["AAE"]],
+                filter_string_mode=["exact"],
+                exact_match_keys=[], fuzzy_match_keys=None,
+                string_match_keys=["FileType"],
+                match_id_key="AAE_Files")
+
+    if (False):
+        remove_files(input_json=DuplicateTaggedCatalog, output_json=PhotoCatalogStart, dry_run=True,
+                     key_name="AAE_Files",trash_folder=TrashFolder, update_catalog=True)
 

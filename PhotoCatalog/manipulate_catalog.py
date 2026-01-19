@@ -3,6 +3,18 @@ import pandas as pd
 import math
 from typing import Any, Optional
 
+
+def _clean_item(item):
+    """Remove keys with None or NaN values from an item."""
+    return {k: v for k, v in item.items()
+            if v is not None and not (isinstance(v, float) and math.isnan(v))}
+
+
+def _clean_catalog(data):
+    """Remove None/NaN values from all items in a catalog."""
+    return [_clean_item(item) for item in data]
+
+
 def filter_catalog(input_json, output_json, keep_keys):
     """
     Filter catalog to keep only specified keys in each item.
@@ -100,7 +112,7 @@ def remove_keys(input_json, output_json, keys_to_remove):
         # Save modified catalog
         print(f"\nWriting modified catalog to {output_json}...")
         with open(output_json, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
+            json.dump(_clean_catalog(data), f, indent=2)
 
         print("Done!")
 
@@ -110,6 +122,60 @@ def remove_keys(input_json, output_json, keys_to_remove):
         print(f"Error: Invalid JSON format in {input_json}")
     except Exception as e:
         print(f"Error: {e}")
+
+
+def rename_key(input_json, output_json, original_name, new_name):
+    """
+    Rename a key in all items of the catalog. Values stay unchanged.
+
+    Args:
+        input_json: Path to the input JSON file
+        output_json: Path to save the modified JSON file
+        original_name: Current name of the key to rename
+        new_name: New name for the key
+    """
+    try:
+        # Read JSON file
+        print(f"Reading {input_json}...")
+        with open(input_json, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        print(f"Loaded {len(data)} items")
+        print(f"Renaming '{original_name}' -> '{new_name}'")
+
+        # Track statistics
+        renamed_count = 0
+        missing_count = 0
+
+        # Rename key in each item
+        for item in data:
+            if original_name in item:
+                item[new_name] = item.pop(original_name)
+                renamed_count += 1
+            else:
+                missing_count += 1
+
+        # Print statistics
+        print(f"\n{'=' * 60}")
+        print("RESULTS")
+        print(f"{'=' * 60}")
+        print(f"Items with key renamed: {renamed_count}")
+        print(f"Items missing original key: {missing_count}")
+
+        # Save modified catalog
+        print(f"\nWriting modified catalog to {output_json}...")
+        with open(output_json, 'w', encoding='utf-8') as f:
+            json.dump(_clean_catalog(data), f, indent=2)
+
+        print("Done!")
+
+    except FileNotFoundError:
+        print(f"Error: File not found - {input_json}")
+    except json.JSONDecodeError:
+        print(f"Error: Invalid JSON format in {input_json}")
+    except Exception as e:
+        print(f"Error: {e}")
+
 
 def expand_catalog(input_catalog, full_catalog, output_catalog, main_key="SourceFile"):
     """
@@ -200,7 +266,7 @@ def expand_catalog(input_catalog, full_catalog, output_catalog, main_key="Source
         # Save expanded catalog
         print(f"\nWriting expanded catalog to {output_catalog}...")
         with open(output_catalog, 'w', encoding='utf-8') as f:
-            json.dump(expanded_data, f, indent=2)
+            json.dump(_clean_catalog(expanded_data), f, indent=2)
 
         print("Done!")
 
@@ -306,7 +372,7 @@ def merge_catalogs(catalog_list, output_catalog, main_key="SourceFile"):
         # Save merged catalog
         print(f"\nWriting merged catalog to {output_catalog}...")
         with open(output_catalog, 'w', encoding='utf-8') as f:
-            json.dump(merged_data, f, indent=2)
+            json.dump(_clean_catalog(merged_data), f, indent=2)
 
         print("Done!")
 
@@ -502,6 +568,6 @@ def add_key_to_catalog(
     # Write to output JSON file
     print(f"\nWriting to output file: {output_file}")
     with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(output_catalog, f, indent=indent, ensure_ascii=False)
+        json.dump(_clean_catalog(output_catalog), f, indent=indent, ensure_ascii=False)
 
     print(f"Successfully written {len(output_catalog)} items to {output_file}")

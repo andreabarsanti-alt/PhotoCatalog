@@ -3,6 +3,89 @@ import subprocess
 import platform
 import pandas as pd
 import os
+import math
+
+
+def _clean_item(item):
+    """Remove keys with None or NaN values from an item."""
+    return {k: v for k, v in item.items()
+            if v is not None and not (isinstance(v, float) and math.isnan(v))}
+
+
+def _clean_catalog(data):
+    """Remove None/NaN values from all items in a catalog."""
+    return [_clean_item(item) for item in data]
+
+
+def get_unique_values(input_json, key_name, sort=True, show_counts=False):
+    """
+    Get all unique values for a given key in a JSON catalog.
+
+    Args:
+        input_json: Path to the input JSON file
+        key_name: Name of the key to get unique values for
+        sort: If True, sort values alphabetically/numerically (default: True)
+        show_counts: If True, return dict with counts instead of list (default: False)
+
+    Returns:
+        list of unique values, or dict of {value: count} if show_counts=True
+    """
+    try:
+        with open(input_json, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        print(f"Loaded {len(data)} items from {input_json}")
+
+        # Count occurrences of each value
+        value_counts = {}
+        missing_count = 0
+
+        for item in data:
+            if key_name in item and item[key_name] is not None:
+                val = item[key_name]
+                value_counts[val] = value_counts.get(val, 0) + 1
+            else:
+                missing_count += 1
+
+        # Sort if requested
+        if sort:
+            try:
+                sorted_values = sorted(value_counts.keys())
+            except TypeError:
+                # Mixed types can't be sorted, keep original order
+                sorted_values = list(value_counts.keys())
+        else:
+            sorted_values = list(value_counts.keys())
+
+        # Print summary
+        print(f"\nKey: '{key_name}'")
+        print(f"Unique values: {len(sorted_values)}")
+        print(f"Items with value: {sum(value_counts.values())}")
+        print(f"Items missing key: {missing_count}")
+
+        if show_counts:
+            # Return dict with counts, sorted by value
+            result = {v: value_counts[v] for v in sorted_values}
+            print(f"\nValues and counts:")
+            for val in sorted_values:
+                print(f"  {val}: {value_counts[val]}")
+            return result
+        else:
+            print(f"\nValues:")
+            for val in sorted_values:
+                print(f"  {val}")
+            return sorted_values
+
+    except FileNotFoundError:
+        print(f"Error: File not found - {input_json}")
+        return None
+    except json.JSONDecodeError:
+        print(f"Error: Invalid JSON format in {input_json}")
+        return None
+    except Exception as e:
+        print(f"Error: {e}")
+        raise
+
 
 def open_files_by_key(input_json, key_name, key_value, source_key="SourceFile", app=None):
     """
@@ -111,6 +194,205 @@ def open_files_by_key(input_json, key_name, key_value, source_key="SourceFile", 
         print(f"Error: {e}")
         raise
 
+
+def compare_files_by_key(input_json, key_name, key_value, verbose=False, ignore_keys=None):
+    """
+    Compare all items in the catalog that have a specific key-value pair.
+    Reports how many keys are identical vs different across the matching items.
+
+    Args:
+        input_json: Path to the input JSON file
+        key_name: Name of the key to filter by (e.g., "matchID")
+        key_value: Value to match (e.g., 5)
+        verbose: If True, print all differences in detail (default: False)
+        ignore_keys: List of keys to ignore in comparison (default: None)
+
+    Returns:
+        dict: Statistics about the comparison
+    """
+    if ignore_keys is None:
+        ignore_keys = []
+
+    try:
+        # Read JSON file
+        print(f"Reading {input_json}...")
+        with open(input_json, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        print(f"Loaded {len(data)} items")
+
+        # Find matching items
+        matching_items = []
+        for item in data:
+            if key_name in item and item[key_name] == key_value:
+                matching_items.append(item)
+
+        if len(matching_items) == 0:
+            print(f"No items found with {key_name}={key_value}")
+            return None
+
+        if len(matching_items) == 1:
+            print(f"Only 1 item found with {key_name}={key_value} - nothing to compare")
+            return None
+
+        print(f"\nFound {len(matching_items)} items with {key_name}={key_value}")
+
+        # Show file paths if SourceFile exists
+        if 'SourceFile' in matching_items[0]:
+            print("\nFiles being compared:")
+            for i, item in enumerate(matching_items, 1):
+                print(f"  {i}. {item.get('SourceFile', 'N/A')}")
+
+        # Collect all keys across all items
+        all_keys = set()
+        for item in matching_items:
+            all_keys.update(item.keys())
+
+        # Remove ignored keys
+        keys_to_compare = all_keys - set(ignore_keys)
+        print(f"\nTotal keys to compare: {len(keys_to_compare)} (ignoring {len(ignore_keys)} keys)")
+
+        # Compare each key across all items
+        identical_keys = []
+        different_keys = []
+        missing_keys = []  # Keys that don't exist in all items
+
+        for key in sorted(keys_to_compare):
+            # Get values for this key from all items
+            values = []
+            items_with_key = 0
+            for item in matching_items:
+                if key in item:
+                    values.append(item[key])
+                    items_with_key += 1
+                else:
+                    values.append(None)
+
+            # Check if key exists in all items
+            if items_with_key < len(matching_items):
+                missing_keys.append({
+                    'key': key,
+                    'present_in': items_with_key,
+                    'total': len(matching_items),
+                    'values': values
+                })
+                continue
+
+            # Check if all values are identical
+            first_value = values[0]
+            all_identical = all(v == first_value for v in values)
+
+            if all_identical:
+                identical_keys.append({
+                    'key': key,
+                    'value': first_value
+                })
+            else:
+                different_keys.append({
+                    'key': key,
+                    'values': values,
+                    'unique_values': list(set(str(v) for v in values))
+                })
+
+        # Print summary
+        print(f"\n{'=' * 60}")
+        print("COMPARISON RESULTS")
+        print(f"{'=' * 60}")
+        print(f"Items compared: {len(matching_items)}")
+        print(f"Keys compared: {len(keys_to_compare)}")
+        print(f"\nIdentical across all items: {len(identical_keys)} keys")
+        print(f"Different across items: {len(different_keys)} keys")
+        print(f"Missing in some items: {len(missing_keys)} keys")
+
+        # Calculate percentage
+        if len(keys_to_compare) > 0:
+            pct_identical = len(identical_keys) / len(keys_to_compare) * 100
+            print(f"\nSimilarity: {pct_identical:.1f}%")
+
+        # Show different keys (always show summary)
+        if different_keys:
+            print(f"\n{'=' * 60}")
+            print("DIFFERENT KEYS")
+            print(f"{'=' * 60}")
+
+            for diff in different_keys:
+                key = diff['key']
+                values = diff['values']
+                unique_count = len(diff['unique_values'])
+
+                if verbose:
+                    print(f"\n{key}: ({unique_count} unique values)")
+                    for i, val in enumerate(values, 1):
+                        # Truncate long values
+                        val_str = str(val)
+                        if len(val_str) > 100:
+                            val_str = val_str[:100] + "..."
+                        print(f"  Item {i}: {val_str}")
+                else:
+                    # Brief summary
+                    print(f"  {key}: {unique_count} unique values")
+
+        # Show missing keys
+        if missing_keys:
+            print(f"\n{'=' * 60}")
+            print("KEYS MISSING IN SOME ITEMS")
+            print(f"{'=' * 60}")
+
+            for miss in missing_keys:
+                key = miss['key']
+                present = miss['present_in']
+                total = miss['total']
+
+                if verbose:
+                    print(f"\n{key}: present in {present}/{total} items")
+                    for i, val in enumerate(miss['values'], 1):
+                        if val is not None:
+                            val_str = str(val)
+                            if len(val_str) > 100:
+                                val_str = val_str[:100] + "..."
+                            print(f"  Item {i}: {val_str}")
+                        else:
+                            print(f"  Item {i}: <missing>")
+                else:
+                    print(f"  {key}: present in {present}/{total} items")
+
+        # Show identical keys in verbose mode
+        if verbose and identical_keys:
+            print(f"\n{'=' * 60}")
+            print("IDENTICAL KEYS (same value across all items)")
+            print(f"{'=' * 60}")
+
+            for ident in identical_keys:
+                key = ident['key']
+                val = ident['value']
+                val_str = str(val)
+                if len(val_str) > 80:
+                    val_str = val_str[:80] + "..."
+                print(f"  {key}: {val_str}")
+
+        print(f"\n{'=' * 60}")
+
+        # Return statistics
+        return {
+            'items_compared': len(matching_items),
+            'total_keys': len(keys_to_compare),
+            'identical_keys': len(identical_keys),
+            'different_keys': len(different_keys),
+            'missing_keys': len(missing_keys),
+            'similarity_percent': pct_identical if len(keys_to_compare) > 0 else 0,
+            'different_key_names': [d['key'] for d in different_keys],
+            'missing_key_names': [m['key'] for m in missing_keys]
+        }
+
+    except FileNotFoundError:
+        print(f"Error: Catalog file not found - {input_json}")
+    except json.JSONDecodeError:
+        print(f"Error: Invalid JSON format in {input_json}")
+    except Exception as e:
+        print(f"Error: {e}")
+        raise
+
+
 def compare_catalogs(catalog1, catalog2, main_key="SourceFile",
                      save_unique1=None, save_unique2=None):
     """
@@ -198,7 +480,7 @@ def compare_catalogs(catalog1, catalog2, main_key="SourceFile",
 
             print(f"\nSaving {len(unique1_items)} items unique to catalog 1...")
             with open(save_unique1, 'w', encoding='utf-8') as f:
-                json.dump(unique1_items, f, indent=2)
+                json.dump(_clean_catalog(unique1_items), f, indent=2)
             print(f"Saved to: {save_unique1}")
 
         if save_unique2 and unique_to_2:
@@ -208,7 +490,7 @@ def compare_catalogs(catalog1, catalog2, main_key="SourceFile",
 
             print(f"\nSaving {len(unique2_items)} items unique to catalog 2...")
             with open(save_unique2, 'w', encoding='utf-8') as f:
-                json.dump(unique2_items, f, indent=2)
+                json.dump(_clean_catalog(unique2_items), f, indent=2)
             print(f"Saved to: {save_unique2}")
 
         print("\nDone!")
