@@ -19,7 +19,8 @@ def _clean_catalog(data):
 def move_duplicates(input_json, duplicates_dir="Duplicates", preferred_paths=None,
                     keep_strategy="keep_shorter_name", dry_run=False, log_file=None,
                     update_catalog=False, output_catalog=None,
-                    match_key="DuplicateMatch", use_original_filename=False):
+                    match_key="DuplicateMatch", use_original_filename=False,
+                    removed_catalog=None):
     """
     Process duplicate groups and move files to a Duplicates directory.
 
@@ -44,6 +45,7 @@ def move_duplicates(input_json, duplicates_dir="Duplicates", preferred_paths=Non
         match_key: Name of the key(s) containing match IDs (string or list of strings, default: "DuplicateMatch")
                    If a list is provided, items must match on ANY of the keys to be grouped
         use_original_filename: If True, rename files using OriginalFilenameFromPhotos field when moving
+        removed_catalog: If provided, save a catalog of removed files (SourceFile only) to this path
     """
 
     # Helper function to print and optionally log
@@ -392,6 +394,17 @@ def move_duplicates(input_json, duplicates_dir="Duplicates", preferred_paths=Non
             with open(output_catalog, 'w', encoding='utf-8') as f:
                 json.dump(_clean_catalog(result), f, indent=2)
             log_print(f"Saved cleaned catalog to: {output_catalog}", log_handle)
+
+        # Save removed files catalog if requested
+        if removed_catalog and moved_files:
+            log_print(f"\n{'=' * 60}", log_handle)
+            log_print("SAVING REMOVED FILES CATALOG", log_handle)
+            log_print(f"{'=' * 60}", log_handle)
+
+            removed_items = [{"SourceFile": f} for f in moved_files]
+            with open(removed_catalog, 'w', encoding='utf-8') as f:
+                json.dump(removed_items, f, indent=2)
+            log_print(f"Saved {len(removed_items)} removed files to: {removed_catalog}", log_handle)
 
     except FileNotFoundError:
         log_print(f"Error: File not found - {input_json}", log_handle)

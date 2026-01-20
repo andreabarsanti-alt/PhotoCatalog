@@ -2,6 +2,12 @@ import pandas as pd
 import json
 import numpy as np
 import math
+import sys
+import os
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from PhotoCatalog.manipulate_catalog import apply_filters
 
 
 def _clean_item(item):
@@ -36,7 +42,7 @@ def find_images(input_json, output_json,
         filter_keys_value: List of lists of allowed values (e.g., [["JPEG", "PNG"]])
         filter_string_keys: List of string keys to filter on (e.g., ["Directory"])
         filter_string_keys_value: List of lists of string patterns (e.g., [["/photos", "/images"]])
-        filter_string_mode: List of modes for each string key - "exact", "contains", "not_contains" (default: ["exact"] for each)
+        filter_string_mode: List of modes for each string key - "exact", "contains", "excludes" (default: ["exact"] for each)
         exact_match_keys: List of numeric fields for exact matching (default: ["ImageWidth", "ImageHeight", "FileSize"])
         string_match_keys: List of string fields for exact matching (default: None)
         fuzzy_match_keys: List of numeric fields for fuzzy matching (default: None)
@@ -69,56 +75,16 @@ def find_images(input_json, output_json,
         print("FILTERING PHASE")
         print(f"{'=' * 60}")
 
-        process_mask = pd.Series([True] * len(df), index=df.index)
-
-        # Apply exact value filters
-        if filter_keys is not None and filter_keys_value is not None:
-            if len(filter_keys) != len(filter_keys_value):
-                raise ValueError("filter_keys and filter_keys_value must have the same length")
-
-            for key, allowed_values in zip(filter_keys, filter_keys_value):
-                if key not in df.columns:
-                    print(f"Warning: Filter key '{key}' not found, ignoring this filter")
-                    continue
-
-                key_mask = df[key].isin(allowed_values)
-                process_mask = process_mask & key_mask
-                print(f"Filter '{key}' in {allowed_values}: {key_mask.sum()} images match")
-
-        # Apply string filters
-        if filter_string_keys is not None and filter_string_keys_value is not None:
-            if len(filter_string_keys) != len(filter_string_keys_value):
-                raise ValueError("filter_string_keys and filter_string_keys_value must have the same length")
-
-            # Set default modes if not provided
-            if filter_string_mode is None:
-                filter_string_mode = ["exact"] * len(filter_string_keys)
-            elif len(filter_string_mode) != len(filter_string_keys):
-                raise ValueError("filter_string_mode must have the same length as filter_string_keys")
-
-            for key, patterns, mode in zip(filter_string_keys, filter_string_keys_value, filter_string_mode):
-                if key not in df.columns:
-                    print(f"Warning: String filter key '{key}' not found, ignoring this filter")
-                    continue
-
-                key_mask = pd.Series([False] * len(df), index=df.index)
-
-                for pattern in patterns:
-                    # Handle null/None matching
-                    if pattern is None or pattern == "null":
-                        key_mask = key_mask | df[key].isna()
-                    elif mode == "exact":
-                        key_mask = key_mask | (df[key] == pattern)
-                    elif mode == "contains":
-                        key_mask = key_mask | df[key].astype(str).str.contains(pattern, case=False, na=False)
-                    elif mode == "not_contains":
-                        key_mask = key_mask | ~df[key].astype(str).str.contains(pattern, case=False, na=False)
-
-                process_mask = process_mask & key_mask
-                print(f"String filter '{key}' ({mode}) with {patterns}: {key_mask.sum()} images match")
-
-        print(f"\nTotal images to process after filtering: {process_mask.sum()}")
-        print(f"Images skipped (not matching filters): {(~process_mask).sum()}")
+        # Use shared apply_filters function
+        _, process_mask = apply_filters(
+            df,
+            filter_keys=filter_keys,
+            filter_keys_value=filter_keys_value,
+            filter_string_keys=filter_string_keys,
+            filter_string_keys_value=filter_string_keys_value,
+            filter_string_mode=filter_string_mode,
+            return_mask=True
+        )
 
         # Work only with filtered images
         df_to_process = df[process_mask].copy()
@@ -153,9 +119,14 @@ def find_images(input_json, output_json,
                     valid_rows[:] = False
                     break
 
+                invalid_for_key = 0
                 for idx, value in df_to_process[key].items():
                     if not isinstance(value, (int, float)) or value <= 0:
+                        if valid_rows[idx]:  # Only count if not already invalid
+                            invalid_for_key += 1
                         valid_rows[idx] = False
+                if invalid_for_key > 0:
+                    print(f"  Removed {invalid_for_key} images with invalid '{key}'")
 
             # Check string keys (must exist and not be null)
             for key in string_match_keys:
@@ -164,13 +135,18 @@ def find_images(input_json, output_json,
                     valid_rows[:] = False
                     break
 
+                invalid_for_key = 0
                 for idx, value in df_to_process[key].items():
                     if pd.isna(value):
+                        if valid_rows[idx]:  # Only count if not already invalid
+                            invalid_for_key += 1
                         valid_rows[idx] = False
+                if invalid_for_key > 0:
+                    print(f"  Removed {invalid_for_key} images with invalid '{key}'")
 
             invalid_count = (~valid_rows).sum()
             if invalid_count > 0:
-                print(f"Removed {invalid_count} images with invalid values")
+                print(f"Total removed: {invalid_count} images with invalid values")
 
             df_to_process = df_to_process[valid_rows].copy()
 
@@ -216,8 +192,13 @@ def find_images(input_json, output_json,
             print(f"Fuzzy match keys: {fuzzy_match_keys}, Tolerance: {fuzzy_tolerance * 100}%")
 
             groups_to_keep = []
+            unique_keys = df_to_process['_exact_key'].unique()
+            total_groups = len(unique_keys)
+            print(f"Processing {total_groups} groups...")
 
-            for exact_key_value in df_to_process['_exact_key'].unique():
+            for group_idx, exact_key_value in enumerate(unique_keys):
+                if group_idx > 0 and group_idx % 500 == 0:
+                    print(f"  Processed {group_idx}/{total_groups} groups...")
                 group = df_to_process[df_to_process['_exact_key'] == exact_key_value].copy()
 
                 valid_in_group = pd.Series([True] * len(group), index=group.index)
@@ -290,7 +271,14 @@ def find_images(input_json, output_json,
 
         # Assign unique IDs to each final group
         match_id = 1
-        for key_value in df_to_process['_final_key'].unique():
+        unique_final_keys = df_to_process['_final_key'].unique()
+        total_final_groups = len(unique_final_keys)
+        print(f"Processing {total_final_groups} groups...")
+
+        for group_idx, key_value in enumerate(unique_final_keys):
+            if group_idx > 0 and group_idx % 500 == 0:
+                print(f"  Processed {group_idx}/{total_final_groups} groups...")
+
             group_mask = df_to_process['_final_key'] == key_value
             group_size = group_mask.sum()
 
@@ -370,3 +358,55 @@ def find_images(input_json, output_json,
     except Exception as e:
         print(f"Error: {e}")
         raise
+
+
+def find_duplicate_photos(input_json, output_json, match_id_key="PhotosDuplicateID"):
+    """
+    Find duplicate photos based on dimensions, file type, date, hash, and similar file size.
+    Excludes MOV/MP4 video files.
+
+    Args:
+        input_json: Path to the input JSON file
+        output_json: Path to save the JSON with match IDs
+        match_id_key: Name of the key to store match ID (default: "PhotosDuplicateID")
+    """
+    find_images(
+        input_json=input_json,
+        output_json=output_json,
+        filter_keys=None,
+        filter_keys_value=None,
+        filter_string_keys=["FileType"],
+        filter_string_keys_value=[["MOV", "MP4"]],
+        filter_string_mode=["excludes"],
+        exact_match_keys=["ImageWidth", "ImageHeight"],
+        string_match_keys=["FileType", "CreateDate", "ImageHash"],
+        fuzzy_match_keys=["FileSize"],
+        fuzzy_tolerance=0.001,
+        match_id_key=match_id_key
+    )
+
+
+def find_duplicate_videos(input_json, output_json, match_id_key="MovieDuplicateID"):
+    """
+    Find duplicate videos based on file size, file type, date, and dimensions.
+    Only processes MOV/MP4 video files.
+
+    Args:
+        input_json: Path to the input JSON file
+        output_json: Path to save the JSON with match IDs
+        match_id_key: Name of the key to store match ID (default: "MovieDuplicateID")
+    """
+    find_images(
+        input_json=input_json,
+        output_json=output_json,
+        filter_keys=None,
+        filter_keys_value=None,
+        filter_string_keys=["FileType"],
+        filter_string_keys_value=[["MOV", "MP4"]],
+        filter_string_mode=["contains"],
+        exact_match_keys=["FileSize"],
+        string_match_keys=["FileType", "CreateDate", "ImageSize"],
+        fuzzy_match_keys=None,
+        fuzzy_tolerance=0.001,
+        match_id_key=match_id_key
+    )

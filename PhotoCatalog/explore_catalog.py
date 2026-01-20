@@ -87,6 +87,53 @@ def get_unique_values(input_json, key_name, sort=True, show_counts=False):
         raise
 
 
+def get_items_missing_key(input_json, key_name, output_json=None):
+    """
+    Get all items that are missing a specific key or have None/NaN value.
+
+    Args:
+        input_json: Path to the input JSON file
+        key_name: Name of the key to check
+        output_json: Optional path to save the missing items (default: None)
+
+    Returns:
+        list of items missing the key
+    """
+    try:
+        with open(input_json, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        print(f"Loaded {len(data)} items from {input_json}")
+
+        missing_items = []
+        for item in data:
+            if key_name not in item or item[key_name] is None:
+                missing_items.append(item)
+            elif isinstance(item[key_name], float) and math.isnan(item[key_name]):
+                missing_items.append(item)
+
+        print(f"\nItems missing '{key_name}': {len(missing_items)}")
+        print(f"Items with '{key_name}': {len(data) - len(missing_items)}")
+
+        if output_json and missing_items:
+            print(f"\nSaving {len(missing_items)} items to {output_json}...")
+            with open(output_json, 'w', encoding='utf-8') as f:
+                json.dump(_clean_catalog(missing_items), f, indent=2)
+            print("Done!")
+
+        return missing_items
+
+    except FileNotFoundError:
+        print(f"Error: File not found - {input_json}")
+        return None
+    except json.JSONDecodeError:
+        print(f"Error: Invalid JSON format in {input_json}")
+        return None
+    except Exception as e:
+        print(f"Error: {e}")
+        raise
+
+
 def open_files_by_key(input_json, key_name, key_value, source_key="SourceFile", app=None):
     """
     Open all files in the catalog that have a specific key-value pair.

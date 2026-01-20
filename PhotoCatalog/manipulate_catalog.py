@@ -15,6 +15,154 @@ def _clean_catalog(data):
     return [_clean_item(item) for item in data]
 
 
+def extract_items(input_json, output_json=None,
+                  filter_keys=None, filter_keys_value=None,
+                  filter_string_keys=None, filter_string_keys_value=None,
+                  filter_string_mode=None):
+    """
+    Extract items matching filter criteria into a new catalog.
+
+    Args:
+        input_json: Path to the input JSON file
+        output_json: Path to save the extracted items (optional - if None, only returns data)
+        filter_keys: List of keys to filter on (e.g., ["FileType"])
+        filter_keys_value: List of lists of allowed values (e.g., [["JPEG", "PNG"]])
+        filter_string_keys: List of string keys to filter on (e.g., ["Directory"])
+        filter_string_keys_value: List of lists of string patterns (e.g., [["/photos", "/images"]])
+        filter_string_mode: List of modes - "exact", "contains", "excludes" (default: ["exact"])
+
+    Returns:
+        list of extracted items
+    """
+    try:
+        print(f"Reading {input_json}...")
+        with open(input_json, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        print(f"Loaded {len(data)} items")
+
+        filtered_data = apply_filters(
+            data,
+            filter_keys=filter_keys,
+            filter_keys_value=filter_keys_value,
+            filter_string_keys=filter_string_keys,
+            filter_string_keys_value=filter_string_keys_value,
+            filter_string_mode=filter_string_mode
+        )
+
+        print(f"\n{'=' * 60}")
+        print("RESULTS")
+        print(f"{'=' * 60}")
+        print(f"Total items: {len(data)}")
+        print(f"Extracted: {len(filtered_data)}")
+        print(f"Excluded: {len(data) - len(filtered_data)}")
+
+        # Save if output_json provided
+        if output_json:
+            print(f"\nWriting {len(filtered_data)} items to {output_json}...")
+            with open(output_json, 'w', encoding='utf-8') as f:
+                json.dump(_clean_catalog(filtered_data), f, indent=2)
+            print("Done!")
+
+        return filtered_data
+
+    except FileNotFoundError:
+        print(f"Error: File not found - {input_json}")
+        return None
+    except json.JSONDecodeError:
+        print(f"Error: Invalid JSON format in {input_json}")
+        return None
+    except Exception as e:
+        print(f"Error: {e}")
+        raise
+
+
+def apply_filters(data, filter_keys=None, filter_keys_value=None,
+                  filter_string_keys=None, filter_string_keys_value=None,
+                  filter_string_mode=None, return_mask=False):
+    """
+    Apply filters to a list of items and return filtered list.
+    Used internally by extract_items and find_images.
+
+    Args:
+        data: List of items (dicts) or pandas DataFrame
+        filter_keys: List of keys to filter on (e.g., ["FileType"])
+        filter_keys_value: List of lists of allowed values (e.g., [["JPEG", "PNG"]])
+        filter_string_keys: List of string keys to filter on (e.g., ["Directory"])
+        filter_string_keys_value: List of lists of string patterns
+        filter_string_mode: List of modes - "exact", "contains", "excludes"
+        return_mask: If True, return (filtered_data, mask) tuple
+
+    Returns:
+        list of filtered items, or (list, mask) tuple if return_mask=True
+    """
+    if isinstance(data, pd.DataFrame):
+        df = data
+    else:
+        df = pd.DataFrame(data)
+
+    if len(df) == 0:
+        if return_mask:
+            return [], pd.Series([], dtype=bool)
+        return []
+
+    process_mask = pd.Series([True] * len(df), index=df.index)
+
+    # Apply exact value filters
+    if filter_keys is not None and filter_keys_value is not None:
+        if len(filter_keys) != len(filter_keys_value):
+            raise ValueError("filter_keys and filter_keys_value must have the same length")
+
+        for key, allowed_values in zip(filter_keys, filter_keys_value):
+            if key not in df.columns:
+                print(f"Warning: Filter key '{key}' not found, ignoring")
+                continue
+
+            key_mask = df[key].isin(allowed_values)
+            process_mask = process_mask & key_mask
+            print(f"Filter '{key}' in {allowed_values}: {key_mask.sum()} items match")
+
+    # Apply string filters
+    if filter_string_keys is not None and filter_string_keys_value is not None:
+        if len(filter_string_keys) != len(filter_string_keys_value):
+            raise ValueError("filter_string_keys and filter_string_keys_value must have the same length")
+
+        if filter_string_mode is None:
+            filter_string_mode = ["exact"] * len(filter_string_keys)
+        elif len(filter_string_mode) != len(filter_string_keys):
+            raise ValueError("filter_string_mode must have the same length as filter_string_keys")
+
+        for key, patterns, mode in zip(filter_string_keys, filter_string_keys_value, filter_string_mode):
+            if key not in df.columns:
+                print(f"Warning: String filter key '{key}' not found, ignoring")
+                continue
+
+            if mode == "excludes":
+                key_mask = pd.Series([True] * len(df), index=df.index)
+            else:
+                key_mask = pd.Series([False] * len(df), index=df.index)
+
+            for pattern in patterns:
+                if pattern is None or pattern == "null":
+                    key_mask = key_mask | df[key].isna()
+                elif mode == "exact":
+                    key_mask = key_mask | (df[key] == pattern)
+                elif mode == "contains":
+                    key_mask = key_mask | df[key].astype(str).str.contains(pattern, case=False, na=False)
+                elif mode == "excludes":
+                    key_mask = key_mask & ~df[key].astype(str).str.contains(pattern, case=False, na=False)
+
+            process_mask = process_mask & key_mask
+            print(f"String filter '{key}' ({mode}) {patterns}: {key_mask.sum()} items match")
+
+    print(f"\nTotal after filtering: {process_mask.sum()}")
+    print(f"Excluded by filters: {(~process_mask).sum()}")
+
+    if return_mask:
+        return df[process_mask].to_dict('records'), process_mask
+    return df[process_mask].to_dict('records')
+
+
 def filter_catalog(input_json, output_json, keep_keys):
     """
     Filter catalog to keep only specified keys in each item.
@@ -564,6 +712,105 @@ def add_key_to_catalog(
     if source_key:
         print(f"  - Items missing source key '{source_key}': {items_missing_source}")
     print(f"  - Total items: {total_items}")
+
+    # Write to output JSON file
+    print(f"\nWriting to output file: {output_file}")
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(_clean_catalog(output_catalog), f, indent=indent, ensure_ascii=False)
+
+    print(f"Successfully written {len(output_catalog)} items to {output_file}")
+
+
+def add_key(
+        input_file: str,
+        output_file: str,
+        key: str,
+        value: Any,
+        prefilter: bool = False,
+        filter_keys: Optional[list] = None,
+        filter_keys_value: Optional[list] = None,
+        filter_string_keys: Optional[list] = None,
+        filter_string_keys_value: Optional[list] = None,
+        filter_string_mode: Optional[list] = None,
+        replace: bool = False,
+        indent: int = 2
+) -> None:
+    """
+    Add a new key with a value to items in a catalog. Optionally prefilter items.
+
+    Args:
+        input_file: Path to the input JSON file
+        output_file: Path to the output JSON file
+        key: Name of the key to add
+        value: Value to set for the key
+        prefilter: If True, only add key to items matching filter criteria
+        filter_keys: List of keys to filter on (e.g., ["FileType"])
+        filter_keys_value: List of lists of allowed values (e.g., [["JPEG", "PNG"]])
+        filter_string_keys: List of string keys to filter on (e.g., ["Directory"])
+        filter_string_keys_value: List of lists of string patterns
+        filter_string_mode: List of modes - "exact", "contains", "excludes" (default: ["exact"])
+        replace: If True, replace existing keys. If False, skip items where key exists
+        indent: Number of spaces for JSON indentation (default: 2)
+    """
+    # Read input JSON file
+    print(f"Reading input file: {input_file}")
+    with open(input_file, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    total_items = len(data)
+    print(f"Loaded {total_items} items from catalog")
+    print(f"Adding key '{key}' with value: {value}")
+
+    if prefilter:
+        print("\nPrefilter enabled - applying filters to select items...")
+        # Get mask of items that match the filter
+        _, mask = apply_filters(
+            data,
+            filter_keys=filter_keys,
+            filter_keys_value=filter_keys_value,
+            filter_string_keys=filter_string_keys,
+            filter_string_keys_value=filter_string_keys_value,
+            filter_string_mode=filter_string_mode,
+            return_mask=True
+        )
+        filter_indices = set(mask[mask].index.tolist())
+        print(f"\nWill add key to {len(filter_indices)} items matching filter")
+    else:
+        filter_indices = None
+
+    output_catalog = []
+    items_modified = 0
+    items_skipped_exists = 0
+    items_skipped_filter = 0
+
+    for i, item in enumerate(data):
+        new_item = item.copy()
+
+        # Check if item passes prefilter (if enabled)
+        if prefilter and i not in filter_indices:
+            output_catalog.append(new_item)
+            items_skipped_filter += 1
+            continue
+
+        # Skip if key exists and replace is False
+        if key in new_item and not replace:
+            output_catalog.append(new_item)
+            items_skipped_exists += 1
+            continue
+
+        new_item[key] = value
+        items_modified += 1
+        output_catalog.append(new_item)
+
+    # Print summary
+    print(f"\n{'=' * 60}")
+    print("RESULTS")
+    print(f"{'=' * 60}")
+    print(f"Items modified: {items_modified}")
+    print(f"Items skipped (key exists): {items_skipped_exists}")
+    if prefilter:
+        print(f"Items skipped (filter): {items_skipped_filter}")
+    print(f"Total items: {total_items}")
 
     # Write to output JSON file
     print(f"\nWriting to output file: {output_file}")
