@@ -4,6 +4,7 @@ import platform
 import pandas as pd
 import os
 import math
+import sys
 
 
 def _clean_item(item):
@@ -769,12 +770,14 @@ def get_catalog_statistics(input_json, group_by_keys=None, compare_json=None, sh
         raise
         raise
 
-def check_image_files(json_path):
+def check_image_files(json_path, output_json=None):
     """
     Read a JSON file and check if each SourceFile path exists on disk.
+    Adds 'MissingFile': True to items where the file is not found.
 
     Args:
         json_path: Path to the JSON file
+        output_json: Optional path to save the updated catalog with MissingFile keys
     """
     # Read the JSON file
     try:
@@ -808,6 +811,7 @@ def check_image_files(json_path):
             else:
                 missing += 1
                 missing_files.append(source_file)
+                item['MissingFile'] = True
                 print(f"✗ Missing: {source_file}")
 
     # Print summary
@@ -822,3 +826,18 @@ def check_image_files(json_path):
         print("\nMissing files:")
         for f in missing_files:
             print(f"  - {f}")
+
+    # Save updated catalog if output_json provided
+    if output_json and missing > 0:
+        print(f"\nSaving catalog with MissingFile keys to {output_json}...")
+        with open(output_json, 'w', encoding='utf-8') as f:
+            json.dump(_clean_catalog(items), f, indent=2)
+        print("Done!")
+
+    # Final status
+    if missing == 0:
+        print("\nAll files found.")
+        sys.exit(0)
+    else:
+        print(f"\nFAILED: {missing} file(s) not found.")
+        sys.exit(1)
