@@ -536,3 +536,45 @@ def create_catalog_from_lightroom(
         # Replace original with hashed version
         os.replace(temp_file, output_json_file)
         print(f"Hashes added successfully")
+
+
+def change_catalog_root(input_json: str, output_json: str, old_root: str, new_root: str) -> None:
+    """
+    Replace root path in SourceFile and Directory keys throughout the catalog.
+
+    Args:
+        input_json: Path to the input JSON catalog file
+        output_json: Path to save the modified JSON catalog file
+        old_root: The old root path to replace
+        new_root: The new root path to use
+    """
+    print(f"Reading {input_json}...")
+    with open(input_json, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    print(f"Loaded {len(data)} items")
+    print(f"Replacing '{old_root}' with '{new_root}' in SourceFile and Directory keys...")
+
+    modified_count = 0
+
+    for item in data:
+        item_modified = False
+
+        if 'SourceFile' in item and item['SourceFile'] and old_root in item['SourceFile']:
+            item['SourceFile'] = item['SourceFile'].replace(old_root, new_root)
+            item_modified = True
+
+        if 'Directory' in item and item['Directory'] and old_root in item['Directory']:
+            item['Directory'] = item['Directory'].replace(old_root, new_root)
+            item_modified = True
+
+        if item_modified:
+            modified_count += 1
+
+    print(f"Modified {modified_count} items")
+    print(f"Writing modified catalog to {output_json}...")
+
+    with open(output_json, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4)
+
+    print("Done!")
