@@ -1,5 +1,2 @@
-from .explore_catalog import *
-from .manipulate_catalog import *
-from .create_catalog import *
-from .manipulate_files import *
-from .mac_photos import *
+from .db import connect, init_db
+from . import enrich
