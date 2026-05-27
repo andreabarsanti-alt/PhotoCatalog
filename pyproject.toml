@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "PhotoCatalog"
+version = "0.0.1"
+description = "Find and safely remove duplicate photos across Mac Photos, Lightroom, and disk folders."
+requires-python = ">=3.11"
+dependencies = [
+    "osxphotos",
+    "imagehash",
+    "Pillow",
+    "pillow-heif",
+]
+
+[project.scripts]
+photocatalog-gui          = "photocatalog_gui:main"
+photocatalog-build        = "PhotoCatalog.build_catalog:main"
+photocatalog-find         = "PhotoCatalog.find_duplicates:main"
+photocatalog-serve        = "PhotoCatalog.serve_duplicates:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["PhotoCatalog*"]

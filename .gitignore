@@ -1,0 +1,28 @@
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Virtual environments
+.venv/
+venv/
+
+# Catalogs (user data — never commit)
+*.db
+*.db-shm
+*.db-wal
+icloud_downloads/
