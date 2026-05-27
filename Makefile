@@ -24,6 +24,7 @@ build:
 dmg: build
 	@echo "Creating DMG…"
 	@mkdir -p dist
+	@rm -f "$(DMG)"
 	@if command -v create-dmg >/dev/null 2>&1; then \
 		create-dmg \
 			--volname "PhotoCatalog $(VERSION)" \
