@@ -29,6 +29,10 @@ _packages = [
     "osxmetadata",
     "photoscript",
     "cgmetadata",
+    # utitools locates uti.csv via __file__ at runtime — must collect data files explicitly
+    "utitools",
+    # bitstring selects its backend (bitstore_bitarray) via importlib.import_module at startup
+    "bitstring",
     # pyobjc framework bundles — each contains .so bridges loaded at runtime
     "objc",
     "Foundation",
