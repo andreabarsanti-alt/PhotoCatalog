@@ -10,6 +10,7 @@
 
 import subprocess
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
 
@@ -20,19 +21,42 @@ version = subprocess.check_output(
     text=True,
 ).strip()
 
+# collect_all() grabs the package's datas, binaries, and all submodule imports.
+# This is necessary for packages that PyInstaller can't fully trace statically
+# (e.g. osxphotos uses importlib, dynamic attribute access, and pyobjc bridges).
+_packages = [
+    "osxphotos",
+    "osxmetadata",
+    "photoscript",
+    "cgmetadata",
+    # pyobjc framework bundles — each contains .so bridges loaded at runtime
+    "objc",
+    "Foundation",
+    "AppKit",
+    "Cocoa",
+    "CoreServices",
+    "AVFoundation",
+    "Quartz",
+    "Vision",
+    "Photos",
+]
+
+extra_datas, extra_binaries, extra_hiddenimports = [], [], []
+for pkg in _packages:
+    d, b, h = collect_all(pkg)
+    extra_datas += d
+    extra_binaries += b
+    extra_hiddenimports += h
+
 a = Analysis(
     ["photocatalog_gui.py"],
     pathex=["."],
-    binaries=[],
+    binaries=extra_binaries,
     datas=[
         # Include the entire PhotoCatalog package (modules + any data files)
         ("PhotoCatalog", "PhotoCatalog"),
-    ],
-    hiddenimports=[
-        # osxphotos pulls in a lot of optional imports
-        "osxphotos",
-        "osxphotos.exiftool",
-        "osxphotos.photoinfo",
+    ] + extra_datas,
+    hiddenimports=extra_hiddenimports + [
         # imaging
         "PIL",
         "PIL.Image",
