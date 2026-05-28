@@ -50,6 +50,8 @@ dmg: build
 #   make release                  — tag current version and upload DMG
 #   make release NOTES="…"       — add custom release notes
 release: dmg
+	@echo "Ensuring repo is public…"
+	gh repo edit --visibility public --yes
 	@echo "Tagging v$(VERSION) and creating GitHub release…"
 	git tag -a "v$(VERSION)" -m "Release v$(VERSION)"
 	git push origin "v$(VERSION)"
