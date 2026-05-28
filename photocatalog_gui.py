@@ -628,9 +628,8 @@ class PhotoCatalogApp(tk.Tk):
             self._update_asset_url = dmg_asset["browser_download_url"] if dmg_asset else None
             self.after(0, self._refresh_update_ui)
         except Exception as e:
-            self.after(0, lambda: self._update_status.config(
-                text=f"Could not check for updates ({type(e).__name__})"
-            ))
+            msg = f"Could not check for updates ({type(e).__name__})"
+            self.after(0, lambda: self._update_status.config(text=msg))
 
     def _check_updates_manual(self):
         self._update_status.config(text="Checking…")
