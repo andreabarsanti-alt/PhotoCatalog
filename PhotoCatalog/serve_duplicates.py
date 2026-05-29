@@ -231,6 +231,165 @@ def _group_detail(strategy: str, group_id: int) -> dict:
     return {"match_info": match_info, "photos": photos, "labels": _LABELS, "decisions": decisions}
 
 
+def _group_filter(allowed: list[dict] | None) -> set[tuple] | None:
+    """Convert [{strategy, group_id}] list to a set of tuples, or None = all groups."""
+    if allowed is None:
+        return None
+    return {(g["strategy"], g["group_id"]) for g in allowed}
+
+
+def _apply_prefer(pattern: str, field: str, allowed: set | None = None) -> dict:
+    """For each group, discard undecided photos where `field` doesn't match pattern.
+
+    field: 'filename' checks original_filename / file_name
+            'path'     checks source_file
+    """
+    import re
+    from collections import defaultdict
+    try:
+        rx = re.compile(pattern, re.IGNORECASE)
+    except re.error as e:
+        raise ValueError(f"Invalid regex: {e}")
+
+    db = _conn()
+    rows = db.execute("""
+        SELECT dg.strategy, dg.group_id,
+               p.id AS photo_id, p.file_name, p.original_filename, p.source_file, p.file_type
+        FROM   duplicate_groups dg
+        JOIN   photos p ON p.id = dg.photo_id
+        LEFT JOIN decisions dec ON dec.photo_id = p.id
+        WHERE  dec.photo_id IS NULL
+    """).fetchall()
+
+    groups: dict = defaultdict(list)
+    for r in rows:
+        groups[(r["strategy"], r["group_id"])].append(r)
+
+    discarded = 0
+    for key, photos in groups.items():
+        if allowed is not None and key not in allowed:
+            continue
+        if len(photos) <= 1:
+            continue
+        matching, non_matching = [], []
+        for p in photos:
+            if field == "path":
+                target = p["source_file"] or ""
+            elif field == "type":
+                target = p["file_type"] or ""
+            else:
+                target = p["original_filename"] or p["file_name"] or Path(p["source_file"]).name or ""
+            (matching if rx.search(target) else non_matching).append(p)
+        if not matching or not non_matching:
+            continue
+        for p in non_matching:
+            db.execute("""
+                INSERT INTO decisions (photo_id, action) VALUES (?, 'discard')
+                ON CONFLICT (photo_id) DO UPDATE
+                    SET action = 'discard', decided_at = datetime('now')
+            """, (p["photo_id"],))
+            discarded += 1
+
+    db.commit()
+    db.close()
+    return {"ok": True, "discarded": discarded}
+
+
+def _apply_prefer_filename(pattern: str, allowed: set | None = None) -> dict:
+    return _apply_prefer(pattern, "filename", allowed)
+
+
+def _apply_prefer_path(pattern: str, allowed: set | None = None) -> dict:
+    return _apply_prefer(pattern, "path", allowed)
+
+
+def _apply_prefer_type(pattern: str, allowed: set | None = None) -> dict:
+    return _apply_prefer(pattern, "type", allowed)
+
+
+def _keep_best(metric: str, allowed: set | None = None) -> dict:
+    """Among undecided photos in each group, discard all but the best by metric.
+
+    metric: 'resolution' → max(width, height); 'size' → file_size
+    Ties are left untouched.
+    """
+    from collections import defaultdict
+    db = _conn()
+    rows = db.execute("""
+        SELECT dg.strategy, dg.group_id,
+               p.id AS photo_id, p.file_size, p.image_width, p.image_height
+        FROM   duplicate_groups dg
+        JOIN   photos p ON p.id = dg.photo_id
+        LEFT JOIN decisions dec ON dec.photo_id = p.id
+        WHERE  dec.photo_id IS NULL
+    """).fetchall()
+
+    groups: dict = defaultdict(list)
+    for r in rows:
+        groups[(r["strategy"], r["group_id"])].append(r)
+
+    def score(p: dict) -> int:
+        if metric == "resolution":
+            return max(p["image_width"] or 0, p["image_height"] or 0)
+        return p["file_size"] or 0
+
+    discarded = 0
+    for key, photos in groups.items():
+        if allowed is not None and key not in allowed:
+            continue
+        if len(photos) <= 1:
+            continue
+        best = max(score(p) for p in photos)
+        if best == 0:
+            continue
+        for p in photos:
+            if score(p) < best:
+                db.execute("""
+                    INSERT INTO decisions (photo_id, action) VALUES (?, 'discard')
+                    ON CONFLICT (photo_id) DO UPDATE
+                        SET action = 'discard', decided_at = datetime('now')
+                """, (p["photo_id"],))
+                discarded += 1
+
+    db.commit()
+    db.close()
+    return {"ok": True, "discarded": discarded}
+
+
+def _keep_unique(allowed: set | None = None) -> dict:
+    """In groups where exactly one photo is not discarded, mark it keep."""
+    from collections import defaultdict
+    db = _conn()
+    rows = db.execute("""
+        SELECT dg.strategy, dg.group_id, p.id AS photo_id,
+               COALESCE(dec.action, '') AS action
+        FROM   duplicate_groups dg
+        JOIN   photos p ON p.id = dg.photo_id
+        LEFT JOIN decisions dec ON dec.photo_id = p.id
+    """).fetchall()
+
+    groups: dict = defaultdict(list)
+    for r in rows:
+        groups[(r["strategy"], r["group_id"])].append(r)
+
+    kept = 0
+    for key, photos in groups.items():
+        if allowed is not None and key not in allowed:
+            continue
+        survivors = [p for p in photos if p["action"] != "discard"]
+        if len(survivors) == 1 and survivors[0]["action"] != "keep":
+            db.execute("""
+                INSERT INTO decisions (photo_id, action) VALUES (?, 'keep')
+                ON CONFLICT (photo_id) DO UPDATE
+                    SET action = 'keep', decided_at = datetime('now')
+            """, (survivors[0]["photo_id"],))
+            kept += 1
+
+    db.commit()
+    db.close()
+    return {"ok": True, "kept": kept}
+
+
 def _decision_stats() -> dict:
     db = _conn()
     rows = db.execute("""
@@ -370,6 +529,36 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, b'{"ok":true}', "application/json")
             except Exception as e:
                 self._send(500, str(e).encode(), "text/plain")
+        elif parsed.path == "/api/auto-select":
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                payload = json.loads(self.rfile.read(length))
+                action = payload.get("action")
+                allowed = _group_filter(payload.get("groups"))
+                if action == "prefer_filename":
+                    result = _apply_prefer_filename(payload.get("pattern", ""), allowed)
+                    self._send(200, json.dumps(result).encode(), "application/json")
+                elif action == "prefer_path":
+                    result = _apply_prefer_path(payload.get("pattern", ""), allowed)
+                    self._send(200, json.dumps(result).encode(), "application/json")
+                elif action == "prefer_type":
+                    result = _apply_prefer_type(payload.get("pattern", ""), allowed)
+                    self._send(200, json.dumps(result).encode(), "application/json")
+                elif action == "prefer_resolution":
+                    result = _keep_best("resolution", allowed)
+                    self._send(200, json.dumps(result).encode(), "application/json")
+                elif action == "prefer_bigger":
+                    result = _keep_best("size", allowed)
+                    self._send(200, json.dumps(result).encode(), "application/json")
+                elif action == "keep_unique":
+                    result = _keep_unique(allowed)
+                    self._send(200, json.dumps(result).encode(), "application/json")
+                else:
+                    self._send(400, b'{"error":"unknown action"}', "application/json")
+            except ValueError as e:
+                self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
+            except Exception as e:
+                self._send(500, str(e).encode(), "text/plain")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -413,19 +602,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         border-right: 1px solid #d1d1d6;
         display: flex; flex-direction: column; flex-shrink: 0; }
 
-#filters { padding: 10px; border-bottom: 1px solid #e5e5ea; }
-#filters input[type=search] { width: 100%; padding: 6px 10px; border: 1px solid #d1d1d6;
-                 border-radius: 8px; font-size: 12px; background: #f2f2f7; margin-bottom: 8px; }
-#filters input[type=search]:focus { outline: none; border-color: #007aff; background: #fff; }
+#filters { padding: 8px 10px; border-bottom: 1px solid #e5e5ea; }
 
-/* signal filter badges */
-#sig-filters { display: flex; flex-wrap: wrap; gap: 5px; }
-.sf { padding: 4px 10px; border-radius: 12px; border: 1.5px solid #d1d1d6;
+/* signal filter badges — 4-column grid → two rows of four */
+#sig-filters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.sf { padding: 3px 0; border-radius: 10px; border: 1.5px solid #d1d1d6;
       background: #fff; color: #6e6e73; font-size: 11px; font-weight: 600;
-      cursor: pointer; user-select: none; transition: all .12s; }
+      cursor: pointer; user-select: none; transition: all .12s;
+      text-align: center; }
 .sf:hover { border-color: #007aff; color: #007aff; }
 .sf.on    { background: #007aff; border-color: #007aff; color: #fff; }
-.sf.on.sf-phash { background: #b45309; border-color: #b45309; }
+.sf.on.sf-phash  { background: #b45309; border-color: #b45309; }
+.sf.on.sf-unique { background: #6e6e73; border-color: #6e6e73; }
 
 #group-list { flex: 1; overflow-y: auto; }
 .group-item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #f2f2f7;
@@ -518,8 +706,26 @@ video.photo-thumb { background: #000; }
       Hide discarded
     </label>
   </div>
-  <div style="display:flex;gap:8px;margin-top:6px">
+  <div style="display:flex;gap:8px;margin-top:6px;align-items:center">
     <button class="action-btn" onclick="resetDecisions()" style="border-color:#c0392b;color:#c0392b">Reset selection</button>
+    <button class="action-btn" onclick="keepUnique()">Keep unique</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:4px;align-items:center;flex-wrap:wrap">
+    <button class="action-btn" onclick="togglePrefer('filename')">Prefer filename&hellip;</button>
+    <button class="action-btn" onclick="togglePrefer('path')">Prefer path&hellip;</button>
+    <button class="action-btn" onclick="togglePrefer('type')">Prefer type&hellip;</button>
+    <button class="action-btn" onclick="instantAction('prefer_resolution')">Prefer higher resolution</button>
+    <button class="action-btn" onclick="instantAction('prefer_bigger')">Prefer bigger</button>
+  </div>
+  <div id="prefer-row" style="display:none;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">
+    <span id="prefer-label" style="color:#8e8e93;font-size:11px"></span>
+    <input id="prefer-input" type="text" placeholder='Python regex, case-insensitive'
+           style="padding:4px 8px;border-radius:6px;border:1px solid #555;background:#2c2c2e;
+                  color:#fff;font-size:12px;width:220px;outline:none"
+           onkeydown="if(event.key==='Enter')applyPrefer();if(event.key==='Escape')togglePrefer(null)">
+    <button class="action-btn" onclick="applyPrefer()">Apply</button>
+    <button class="action-btn" onclick="togglePrefer(null)"
+            style="border-color:#555;color:#8e8e93">Cancel</button>
   </div>
 </div>
 
@@ -533,6 +739,7 @@ video.photo-thumb { background: #000; }
         <span class="sf" data-sig="type">Type</span>
         <span class="sf" data-sig="size">Size</span>
         <span class="sf" data-sig="name">Name</span>
+        <span class="sf sf-unique" id="btn-unique" title="Show groups resolved to a single survivor">Unique</span>
       </div>
     </div>
     <div id="group-list"></div>
@@ -549,6 +756,7 @@ let allGroups      = [];
 let activeKey      = null;
 let activeSignals  = new Set();
 let currentDecisions = {};   // photo_id -> action, for photos in the active group
+let showResolved   = false;  // when false, hide groups with ≤1 non-discarded photo
 
 const SIGNALS   = ['phash','dims','date','type','size','name'];
 const SIG_LABEL = {phash:'pHash', dims:'Dims', date:'Date', type:'Type', size:'Size', name:'Name'};
@@ -576,7 +784,7 @@ function loadStats() {
 }
 
 // ── signal filter badges ─────────────────────────────────────────────────────
-document.querySelectorAll('.sf').forEach(btn => {
+document.querySelectorAll('.sf[data-sig]').forEach(btn => {
   btn.addEventListener('click', () => {
     const sig = btn.dataset.sig;
     if (activeSignals.has(sig)) {
@@ -590,12 +798,20 @@ document.querySelectorAll('.sf').forEach(btn => {
   });
 });
 
+document.getElementById('btn-unique').addEventListener('click', function() {
+  showResolved = !showResolved;
+  this.classList.toggle('on', showResolved);
+  renderList();
+});
+
 // ── render left pane ─────────────────────────────────────────────────────────
 function getFilteredGroups() {
   return allGroups.filter(g => {
     const sigs = g.signals || {};
     if (![...activeSignals].every(s => sigs[s] === true)) return false;
-    if (hideDiscarded && g.num_photos - (g.discard_count || 0) <= 1) return false;
+    const survivors = g.num_photos - (g.discard_count || 0);
+    if (!showResolved && survivors <= 1) return false;
+    if (hideDiscarded && survivors <= 1) return false;
     return true;
   });
 }
@@ -800,6 +1016,70 @@ function toggleHideDiscarded(on) {
     c.style.display = on ? 'none' : '';
   });
   renderList();
+}
+
+function visibleGroups() {
+  return getFilteredGroups().map(g => ({strategy: g.strategy, group_id: g.group_id}));
+}
+
+function instantAction(action) {
+  fetch('/api/auto-select', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action, groups: visibleGroups()})
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) { alert('Error: ' + data.error); return; }
+    loadStats();
+    refreshGroups();
+    if (activeKey) {
+      const [strategy, group_id] = activeKey.split('/');
+      loadGroup(strategy, +group_id);
+    }
+  });
+}
+
+function keepUnique() { instantAction('keep_unique'); }
+
+let _preferField = null;
+
+function togglePrefer(field) {
+  const row = document.getElementById('prefer-row');
+  if (!field || _preferField === field && row.style.display !== 'none') {
+    row.style.display = 'none';
+    _preferField = null;
+    return;
+  }
+  _preferField = field;
+  const labels = {filename: 'Match against filename:', path: 'Match against full path:', type: 'Match against file type (e.g. DNG, JPEG):'};
+  document.getElementById('prefer-label').textContent = labels[field] || '';
+  document.getElementById('prefer-input').value = '';
+  row.style.display = 'flex';
+  document.getElementById('prefer-input').focus();
+}
+
+function applyPrefer() {
+  const pattern = document.getElementById('prefer-input').value.trim();
+  if (!pattern || !_preferField) return;
+  const actionMap = {filename: 'prefer_filename', path: 'prefer_path', type: 'prefer_type'};
+  const action = actionMap[_preferField] || 'prefer_filename';
+  fetch('/api/auto-select', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action, pattern, groups: visibleGroups()})
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) { alert('Error: ' + data.error); return; }
+    togglePrefer(null);
+    loadStats();
+    refreshGroups();
+    if (activeKey) {
+      const [strategy, group_id] = activeKey.split('/');
+      loadGroup(strategy, +group_id);
+    }
+  });
 }
 
 function noThumb() {

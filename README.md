@@ -1,4 +1,4 @@
-# PhotoCatalog  v0.0.1
+# PhotoCatalog  v0.0.4
 
 **Find and safely remove duplicate photos across Mac Photos, Lightroom Classic, and disk folders.**
 
@@ -23,13 +23,14 @@ them in a web-based UI where you can mark each copy as Keep or Discard.
 git clone git@github.com:andreabarsanti-alt/PhotoCatalog.git
 cd PhotoCatalog
 python3 -m venv .venv
-.venv/bin/pip install osxphotos imagehash Pillow pillow-heif
-brew install exiftool          # needed for Folder source ingestion
+.venv/bin/pip install osxphotos imagehash Pillow pillow-heif exifread
 
 # Launch the GUI
 .venv/bin/python3 photocatalog_gui.py
 # Or double-click PhotoCatalog.command in Finder
 ```
+
+> No external tools required — folder ingestion uses the pure-Python `exifread` library.
 
 ---
 
@@ -95,6 +96,32 @@ Default `--min-score 2` keeps groups that agree on at least two signals.  Group 
 
 ---
 
+## Duplicate browser — selection actions
+
+The web UI top bar provides bulk actions scoped to the **currently visible groups** (respects all active filters):
+
+**General actions**
+
+| Action | Effect |
+|---|---|
+| Reset selection | Clear all Keep / Discard decisions |
+| Keep unique | In groups where exactly one photo is not discarded, mark it Keep |
+
+**Selection actions** *(operate only on undecided photos within each group)*
+
+| Action | Effect |
+|---|---|
+| Prefer filename… | Discard photos whose filename doesn't match a Python regex |
+| Prefer path… | Same, matched against the full file path |
+| Prefer type… | Same, matched against file type (e.g. `DNG`, `JPEG`) |
+| Prefer higher resolution | Discard photos below the max(width, height) in the group; ties kept |
+| Prefer bigger | Discard photos below the largest file size in the group; ties kept |
+
+The **Unique** filter badge (in the signal filter row) hides groups that have been reduced to a
+single survivor — keeping the list clean after bulk actions.
+
+---
+
 ## Database schema
 
 Catalogs live in `~/Pictures/PhotoCatalogs/` by default.  Each `.db` file is a standard SQLite
@@ -121,9 +148,9 @@ make dmg
 make release
 
 # Bump version, then release
-make bump VERSION=0.0.2
+make bump VERSION=0.0.4
 git add PhotoCatalog/__init__.py pyproject.toml
-git commit -m "Bump version to 0.0.2"
+git commit -m "Bump version to 0.0.4"
 make release
 ```
 
@@ -134,6 +161,8 @@ make release
 - [x] Unified catalog (Mac Photos + Lightroom + folders)
 - [x] Perceptual hash + metadata + filename duplicate detection
 - [x] Web UI to browse and mark duplicates
+- [x] Bulk selection actions (prefer filename/path/type/resolution/size, keep unique)
 - [x] GUI launcher with in-app updater
+- [x] Self-contained app bundle (no external tools required)
 - [ ] Resolve — bulk-move discarded copies to a holding folder
 - [ ] Multi-machine export — portable DB or sync mechanism
