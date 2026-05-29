@@ -1,12 +1,17 @@
 """Ingest from a disk folder using pure-Python EXIF extraction (exifread + Pillow)."""
+import logging
 import os
 import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import exifread
 from PIL import Image
+from tqdm import tqdm
+
+_exr_log = logging.getLogger("exifread")
 
 from ..db import insert_photos
 
@@ -117,11 +122,24 @@ def _extract(path: Path) -> dict:
 
     # EXIF via exifread (works for JPEG, TIFF, and most RAW formats)
     tags: dict = {}
+    _captured: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            _captured.append(record.getMessage())
+
+    _h = _Capture()
+    _exr_log.addHandler(_h)
     try:
         with open(path, "rb") as f:
             tags = exifread.process_file(f, details=False)
-    except Exception:
-        pass
+    except Exception as e:
+        _captured.append(f"{type(e).__name__}: {e}")
+    finally:
+        _exr_log.removeHandler(_h)
+
+    for msg in _captured:
+        print(f"  EXIF [{path.name}]: {msg}", file=sys.stderr)
 
     row["date_original"] = _exif_date(tags, "EXIF DateTimeOriginal") or _exif_date(tags, "EXIF DateTimeDigitized")
     row["date_created"]  = _exif_date(tags, "EXIF DateTimeDigitized") or _exif_date(tags, "Image DateTime")
@@ -142,8 +160,8 @@ def _extract(path: Path) -> dict:
         try:
             with Image.open(path) as img:
                 w, h = img.size
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  Dimensions unreadable [{path.name}]: {type(e).__name__}: {e}", file=sys.stderr)
     row["image_width"]  = w
     row["image_height"] = h
 
@@ -155,14 +173,21 @@ def ingest(conn: sqlite3.Connection, folder_path: str) -> tuple[int, int]:
     if not folder.exists():
         raise FileNotFoundError(f"Folder not found: {folder}")
 
+    print("Scanning for image files...", end=" ", flush=True)
+    files = [
+        Path(dirpath) / fname
+        for dirpath, _, filenames in os.walk(folder)
+        for fname in filenames
+        if Path(fname).suffix.lower() in IMAGE_EXTENSIONS
+    ]
+    print(f"{len(files)} found")
+
     rows = []
-    for dirpath, _, filenames in os.walk(folder):
-        for fname in filenames:
-            if Path(fname).suffix.lower() in IMAGE_EXTENSIONS:
-                try:
-                    rows.append(_extract(Path(dirpath) / fname))
-                except Exception:
-                    pass
+    for path in tqdm(files, desc="Extracting metadata", unit="file"):
+        try:
+            rows.append(_extract(path))
+        except Exception as e:
+            tqdm.write(f"  Skipped {path} — {type(e).__name__}: {e}")
 
     for row in rows:
         row["source_catalog"] = str(folder_path)

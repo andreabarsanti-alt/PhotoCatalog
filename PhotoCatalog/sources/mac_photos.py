@@ -3,6 +3,8 @@ import json
 import sqlite3
 from typing import Optional
 
+from tqdm import tqdm
+
 from ..db import insert_photos
 
 
@@ -28,15 +30,17 @@ def ingest(conn: sqlite3.Connection, library_path: Optional[str] = None) -> tupl
         raise ImportError("osxphotos is required: pip install osxphotos")
 
     kwargs = {"dbfile": library_path} if library_path else {}
+    print("Loading Photos library...", end=" ", flush=True)
     db = osxphotos.PhotosDB(**kwargs)
     photos = db.photos(movies=True)  # includes both photos and movies
+    print(f"{len(photos)} photos")
     catalog = str(db.db_path)
 
     local = 0
     cloud = 0
     rows = []
 
-    for p in photos:
+    for p in tqdm(photos, desc="Reading metadata", unit="photo"):
         path = p.path
         if path:
             source_file = path

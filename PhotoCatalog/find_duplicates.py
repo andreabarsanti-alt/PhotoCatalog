@@ -25,6 +25,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from tqdm import tqdm
+
 from .db import connect, init_db
 
 
@@ -131,11 +133,10 @@ def find_unified(conn: sqlite3.Connection, min_score: int = 2) -> tuple[int, int
         components[find(pid)].append(pid)
 
     candidates = [pids for pids in components.values() if len(pids) >= 2]
-    print(f"  Scoring {len(candidates):,} candidate groups…")
 
     # ── Score ────────────────────────────────────────────────────────────────
     scored: list[tuple] = []
-    for pids in candidates:
+    for pids in tqdm(candidates, desc=f"Scoring {len(candidates):,} candidate groups", unit="group"):
         score, signals = _score_group(pids, photos)
         if score >= min_score:
             scored.append((score, pids, signals))

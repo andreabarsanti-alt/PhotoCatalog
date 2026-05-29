@@ -3,6 +3,8 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
+from tqdm import tqdm
+
 _IMAGE_TYPES = {"JPEG", "JPG", "PNG", "HEIC", "HEIF", "TIFF", "WEBP", "BMP", "GIF", "RAW",
                 "CR2", "CR3", "NEF", "ARW", "ORF", "RW2", "DNG", "RAF"}
 _MOVIE_TYPES = {"MOV", "MP4", "M4V", "AVI", "MKV", "MPEG", "MPG", "3GP", "WEBM"}
@@ -42,12 +44,7 @@ def add_perceptual_hashes(conn: sqlite3.Connection, batch_size: int = 500) -> tu
     hashed = 0
     failed = 0
 
-    print(f"Computing perceptual hashes for {total} local images (movies excluded)...")
-
-    for i, row in enumerate(rows):
-        if i > 0 and i % 100 == 0:
-            print(f"  {i}/{total}...")
-
+    for i, row in enumerate(tqdm(rows, desc=f"Hashing {total} images", unit="img")):
         if not Path(row["source_file"]).is_file():
             failed += 1
             continue
@@ -59,7 +56,8 @@ def add_perceptual_hashes(conn: sqlite3.Connection, batch_size: int = 500) -> tu
                 (h, row["id"]),
             )
             hashed += 1
-        except Exception:
+        except Exception as e:
+            tqdm.write(f"  Hash failed: {row['source_file']} — {type(e).__name__}: {e}")
             failed += 1
 
         if i % batch_size == 0:

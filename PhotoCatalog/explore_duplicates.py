@@ -164,8 +164,8 @@ def _print_group_terminal(
     match_info = {}
     try:
         match_info = json.loads(photos[0]["match_info"] or "{}")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: could not parse match_info for group {group_id}: {e}", file=sys.stderr)
 
     header = f"[{strategy}] Group {group_id}/{total_groups}  ({len(photos)} photos)"
     if match_info:
@@ -292,8 +292,8 @@ def _build_html(conn: sqlite3.Connection, path: str) -> None:
             match_info = {}
             try:
                 match_info = json.loads(photos[0]["match_info"] or "{}")
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: could not parse match_info for group {gid}: {e}", file=sys.stderr)
 
             mi_str = "  |  ".join(f"{k}: {v}" for k, v in match_info.items())
             parts.append(f'<div class="group"><div class="group-header">Group {gid} &nbsp;·&nbsp; {len(photos)} photos &nbsp;·&nbsp; {mi_str}</div>')

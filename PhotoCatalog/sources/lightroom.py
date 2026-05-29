@@ -3,6 +3,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+from tqdm import tqdm
+
 from ..db import insert_photos
 
 # Notes on the Lightroom schema:
@@ -87,13 +89,15 @@ def ingest(conn: sqlite3.Connection, lrcat_path: str) -> tuple[int, int]:
     lr_conn = sqlite3.connect(f"file:{lrcat}?mode=ro", uri=True)
     lr_conn.row_factory = sqlite3.Row
     try:
+        print("Querying Lightroom catalog...", end=" ", flush=True)
         cursor = lr_conn.execute(QUERY)
         raw_rows = cursor.fetchall()
+        print(f"{len(raw_rows)} photos")
     finally:
         lr_conn.close()
 
     rows = []
-    for r in raw_rows:
+    for r in tqdm(raw_rows, desc="Processing rows", unit="photo"):
         source_file = r["source_file"]
         if not source_file:
             continue

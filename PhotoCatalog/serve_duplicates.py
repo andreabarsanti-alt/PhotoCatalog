@@ -13,6 +13,7 @@ import argparse
 import io
 import json
 import mimetypes
+import sys
 import threading
 import urllib.parse
 import webbrowser
@@ -61,7 +62,8 @@ def _all_groups() -> list[dict]:
         label = " / ".join(n for n in names if n)
         try:
             mi = json.loads(r["match_info"] or "{}")
-        except Exception:
+        except Exception as e:
+            print(f"Warning: could not parse match_info for group {r['group_id']}: {e}", file=sys.stderr)
             mi = {}
         result.append({
             "strategy":     r["strategy"],
@@ -197,8 +199,8 @@ def _group_detail(strategy: str, group_id: int) -> dict:
     if photos:
         try:
             raw_mi = json.loads(photos[0].get("match_info") or "{}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: could not parse match_info: {e}", file=sys.stderr)
 
     # Separate the signals dict from the rest of match_info for the UI
     signals = {k: raw_mi[k] for k in ("phash","dims","date","type","size","name") if k in raw_mi}
