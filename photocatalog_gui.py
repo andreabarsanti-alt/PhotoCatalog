@@ -73,7 +73,10 @@ INSTALL_DIR = Path("/Applications")
 def _python_cmd() -> list[str]:
     """Return the correct Python invocation prefix depending on environment."""
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--photocatalog-cli"]
+        # Use the sibling PhotoCatalogCLI binary — it's NOT the CFBundleExecutable,
+        # so macOS does not go through app-launch infrastructure for it.
+        cli = Path(sys.executable).parent / "PhotoCatalogCLI"
+        return [str(cli)]
     return [VENV_PYTHON, "-m"]
 
 
@@ -184,12 +187,24 @@ class PhotoCatalogApp(tk.Tk):
 
         of = ttk.LabelFrame(tab, text="Options", padding=6)
         of.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        of.columnconfigure(1, weight=1)
         self._fresh = tk.BooleanVar()
         ttk.Checkbutton(
             of,
             text="Fresh start — drop and recreate the database before ingesting",
             variable=self._fresh,
-        ).pack(anchor="w")
+        ).grid(row=0, column=0, columnspan=3, sticky="w")
+
+        ttk.Label(of, text="Hash threads:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        workers_row = ttk.Frame(of)
+        workers_row.grid(row=1, column=1, columnspan=2, sticky="w", pady=(6, 0))
+        self._workers = tk.StringVar(value="0")
+        ttk.Spinbox(workers_row, textvariable=self._workers, from_=0, to=32, width=4).pack(
+            side="left"
+        )
+        ttk.Label(
+            workers_row, text="  (0 = auto, uses all available cores)", foreground="gray"
+        ).pack(side="left")
 
         self._ic_f = ttk.LabelFrame(tab, text="iCloud options (MacPhotos only)", padding=6)
         self._ic_f.grid(row=3, column=0, sticky="ew", pady=(0, 6))
@@ -294,6 +309,9 @@ class PhotoCatalogApp(tk.Tk):
         lim = self._dl_limit.get().strip()
         if lim:
             cmd += ["--download-limit", lim]
+        w = self._workers.get().strip()
+        if w and w != "0":
+            cmd += ["--workers", w]
 
         self._run_cmd(cmd, caffeinate=True)
 

@@ -1,4 +1,4 @@
-# PhotoCatalog  v0.0.8
+# PhotoCatalog  v0.0.9
 
 **Find and safely remove duplicate photos across Mac Photos, Lightroom Classic, and disk folders.**
 
@@ -68,6 +68,7 @@ All commands use the project venv:
 #   --fresh            Drop and recreate the DB before ingesting
 #   --download         (MacPhotos only) Download iCloud-only photos locally
 #   --download-limit N Cap iCloud downloads per run
+#   --workers N        Parallel threads for hashing (0 = auto, default: min(cpu_count, 8))
 
 # Find duplicates
 .venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db               # unified (recommended)
@@ -171,5 +172,6 @@ make release
 - [x] GUI launcher with in-app updater
 - [x] Self-contained app bundle (no external tools required)
 - [x] Resumable ingestion and duplicate-finding
+- [x] Parallel perceptual hashing (multi-core, configurable)
 - [ ] Resolve — bulk-move discarded copies to a holding folder
 - [ ] Multi-machine export — portable DB or sync mechanism

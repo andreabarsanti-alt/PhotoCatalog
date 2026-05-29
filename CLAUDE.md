@@ -63,8 +63,9 @@ Two tables, one view:
 - **Lightroom file_size**: `AgLibraryFileAssetMetadata` and `AgLibraryFileDigest` are empty in this catalog; sizes come from `AgParsedImportHash` (via `id_global`, ~37% coverage) then fall back to `os.stat()` for locally accessible files
 - **insert_photos uses union of all row keys**: handles heterogeneous batches correctly
 - **Unified duplicate strategy**: union-find across 3 signals (phash, dims+date+type, stem+date_minute), then score each group on 6 binary attributes; score = (10+n) if phash else n; min_score = 2 (internal constant `_MIN_SCORE`, not exposed to users)
-- **`caffeinate -i`**: all GUI-spawned subprocesses are wrapped with `caffeinate -i` to prevent macOS idle sleep during long ingestion or scoring runs
-- **Subprocess window fix**: the `--photocatalog-cli` passthrough sets `NSApplicationActivationPolicyProhibited` via AppKit before any GUI code runs, preventing macOS from opening a new Dock icon for each subprocess
+- **`caffeinate -i`**: Build Catalog and Find Duplicates subprocesses are wrapped with `caffeinate -i` to prevent macOS idle sleep; Browse Duplicates is NOT (it runs indefinitely)
+- **Subprocess window fix**: the GUI spawns `PhotoCatalogCLI` (a plain binary in `Contents/MacOS/`) instead of the main `PhotoCatalog` app binary. Because it is NOT the `CFBundleExecutable`, macOS does not go through app-launch infrastructure for it — no extra Dock icon or window appears
+- **Parallel hashing**: `add_perceptual_hashes()` uses `ThreadPoolExecutor` with `min(os.cpu_count(), 8)` threads by default (auto, configurable via `--workers`); commits every 200 hashes instead of per-file
 
 ## Resumable operations
 Both long-running operations are safe to interrupt and resume:

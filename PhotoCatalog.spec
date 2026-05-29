@@ -90,7 +90,42 @@ a = Analysis(
     noarchive=False,
 )
 
+# ---------------------------------------------------------------------------
+# CLI helper analysis — same dependencies as the GUI, but no tkinter/AppKit init
+# ---------------------------------------------------------------------------
+
+b = Analysis(
+    ["photocatalog_cli.py"],
+    pathex=["."],
+    binaries=extra_binaries,
+    datas=[
+        ("PhotoCatalog", "PhotoCatalog"),
+    ] + extra_datas,
+    hiddenimports=extra_hiddenimports + [
+        "PIL",
+        "PIL.Image",
+        "pillow_heif",
+        "imagehash",
+        "sqlite3",
+        "http.server",
+        "urllib.request",
+        "webbrowser",
+        "exifread",
+        "exifread.tags",
+        "exifread.tags.makernote",
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz_cli = PYZ(b.pure, b.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
@@ -109,11 +144,32 @@ exe = EXE(
     entitlements_file=None,
 )
 
+exe_cli = EXE(
+    pyz_cli,
+    b.scripts,
+    [],
+    exclude_binaries=True,
+    name="PhotoCatalogCLI",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=True,           # plain Unix process — no Cocoa app machinery
+    disable_windowed_traceback=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
+
 coll = COLLECT(
     exe,
+    exe_cli,
     a.binaries,
     a.zipfiles,
     a.datas,
+    b.binaries,
+    b.zipfiles,
+    b.datas,
     strip=False,
     upx=True,
     upx_exclude=[],

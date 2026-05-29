@@ -3,20 +3,13 @@ Find duplicate photos and store results in the duplicate_groups table.
 
 Run from the repo root:
     python -m PhotoCatalog.find_duplicates --db catalog.db              # unified (recommended)
-    python -m PhotoCatalog.find_duplicates --db catalog.db --min-score 3
-
-Scoring (stored in match_info.score):
-    phash match                    →  10 + n_other   (highest tier)
-    all 5 of dims/date/type/size/name match  →  5
-    4 of 5                         →  4
-    3 of 5                         →  3
-    2 of 5                         →  2   (minimum kept by default)
+    python -m PhotoCatalog.find_duplicates --db catalog.db --strategy phash
 
 Groups are assigned IDs in descending score order so group #1 is always the
-strongest match. Re-running clears and rewrites the unified strategy only.
+strongest match. Re-running clears and rewrites only the chosen strategy's rows.
 
-The three individual strategies (phash / metadata / filename) are kept for
-debugging but the recommended workflow is the unified strategy.
+The three focused strategies (phash / metadata / filename) are kept for
+debugging; the recommended workflow is the unified strategy.
 """
 import argparse
 import json
@@ -93,7 +86,6 @@ def _checkpoint_clear(conn: sqlite3.Connection) -> None:
 _MIN_SCORE = 2  # internal threshold — groups with fewer matching signals are discarded
 
 def find_unified(conn: sqlite3.Connection) -> tuple[int, int]:
-    min_score = _MIN_SCORE
     """
     Find duplicates using a union-find across all three signals, then score
     each resulting group on 6 binary attributes.
@@ -116,6 +108,7 @@ def find_unified(conn: sqlite3.Connection) -> tuple[int, int]:
     Groups with score < min_score are discarded.
     Groups are inserted in descending score order → group #1 = strongest.
     """
+    min_score = _MIN_SCORE
     photo_count = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
 
     # ── Check for a saved checkpoint from a previous interrupted run ─────────

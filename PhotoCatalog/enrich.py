@@ -1,5 +1,7 @@
 """Enrichment operations that add computed fields to an existing catalog database."""
+import os
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
@@ -9,8 +11,10 @@ _IMAGE_TYPES = {"JPEG", "JPG", "PNG", "HEIC", "HEIF", "TIFF", "WEBP", "BMP", "GI
                 "CR2", "CR3", "NEF", "ARW", "ORF", "RW2", "DNG", "RAF"}
 _MOVIE_TYPES = {"MOV", "MP4", "M4V", "AVI", "MKV", "MPEG", "MPG", "3GP", "WEBM"}
 
+_COMMIT_BATCH = 200  # commit to DB after this many successful hashes
 
-def add_perceptual_hashes(conn: sqlite3.Connection) -> tuple[int, int]:
+
+def add_perceptual_hashes(conn: sqlite3.Connection, workers: int = 0) -> tuple[int, int]:
     """
     Compute and store perceptual hashes for image photos where perceptual_hash is NULL.
 
@@ -20,6 +24,9 @@ def add_perceptual_hashes(conn: sqlite3.Connection) -> tuple[int, int]:
 
     Uses phash with hash_size=16 (256-bit hash, 64 hex chars).
     Hamming distance <= 10 is a good "likely duplicate" threshold.
+
+    Args:
+        workers: Parallel threads for image decode + hash (0 = auto, capped at 8).
 
     Returns:
         (hashed, failed) counts.
@@ -40,26 +47,49 @@ def add_perceptual_hashes(conn: sqlite3.Connection) -> tuple[int, int]:
           AND  UPPER(COALESCE(file_type, '')) NOT IN ({})
     """.format(", ".join(f"'{t}'" for t in _MOVIE_TYPES))).fetchall()
 
-    total = len(rows)
+    pending = [(row["id"], row["source_file"])
+               for row in rows if Path(row["source_file"]).is_file()]
     hashed = 0
-    failed = 0
+    failed = len(rows) - len(pending)  # inaccessible files
 
-    for row in tqdm(rows, desc=f"Hashing {total} images", unit="img"):
-        if not Path(row["source_file"]).is_file():
-            failed += 1
-            continue
+    if not pending:
+        return hashed, failed
+
+    n_workers = workers if workers > 0 else min(os.cpu_count() or 4, 8)
+
+    def _hash_one(args: tuple) -> tuple[int, str | None, str | None]:
+        row_id, path = args
         try:
-            img = Image.open(row["source_file"])
-            h = str(imagehash.phash(img, hash_size=16))
-            conn.execute(
-                "UPDATE photos SET perceptual_hash = ? WHERE id = ?",
-                (h, row["id"]),
-            )
-            conn.commit()
-            hashed += 1
+            img = Image.open(path)
+            return row_id, str(imagehash.phash(img, hash_size=16)), None
         except Exception as e:
-            tqdm.write(f"  Hash failed: {row['source_file']} — {type(e).__name__}: {e}")
-            failed += 1
+            return row_id, None, f"{type(e).__name__}: {e}"
+
+    pending_commit = 0
+
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        label = f"Hashing {len(pending)} images ({n_workers} threads)"
+        futures_map = {pool.submit(_hash_one, item): item for item in pending}
+        with tqdm(total=len(pending), desc=label, unit="img") as bar:
+            for future in as_completed(futures_map):
+                row_id, h, err = future.result()
+                if h is not None:
+                    conn.execute(
+                        "UPDATE photos SET perceptual_hash = ? WHERE id = ?",
+                        (h, row_id),
+                    )
+                    hashed += 1
+                    pending_commit += 1
+                    if pending_commit >= _COMMIT_BATCH:
+                        conn.commit()
+                        pending_commit = 0
+                else:
+                    tqdm.write(f"  Hash failed: {futures_map[future][1]} — {err}")
+                    failed += 1
+                bar.update(1)
+
+    if pending_commit:
+        conn.commit()
 
     return hashed, failed
 

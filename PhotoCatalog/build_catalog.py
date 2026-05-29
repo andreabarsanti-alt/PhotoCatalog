@@ -52,6 +52,10 @@ def main() -> None:
         "--download-limit", type=int, default=None,
         help="Max number of iCloud photos to download per run (for batching)."
     )
+    parser.add_argument(
+        "--workers", type=int, default=0,
+        help="Parallel threads for perceptual hashing (0 = auto, default: min(cpu_count, 8))."
+    )
     args = parser.parse_args()
 
     if args.download and args.source != "MacPhotos":
@@ -86,7 +90,7 @@ def main() -> None:
         # Always hash newly accessible files after ingestion
         print()
         from .enrich import add_perceptual_hashes
-        hashed, failed = add_perceptual_hashes(conn)
+        hashed, failed = add_perceptual_hashes(conn, workers=args.workers)
         print(f"Hashed   : {hashed}")
         if failed:
             print(f"Failed   : {failed} (unreadable files)")
