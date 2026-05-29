@@ -48,7 +48,10 @@ def _all_groups() -> list[dict]:
                COUNT(*)              AS num_photos,
                MIN(dg.match_info)   AS match_info,
                GROUP_CONCAT(p.original_filename, '||') AS names,
-               COUNT(CASE WHEN dec.action = 'discard' THEN 1 END) AS discard_count
+               COUNT(CASE WHEN dec.action = 'discard' THEN 1 END) AS discard_count,
+               MAX(CASE WHEN UPPER(p.file_type) IN
+                   ('MOV','MP4','M4V','AVI','MKV','MPEG','MPG','3GP','WEBM')
+                   THEN 1 ELSE 0 END) AS has_video
         FROM   duplicate_groups dg
         JOIN   photos p ON p.id = dg.photo_id
         LEFT JOIN decisions dec ON dec.photo_id = p.id
@@ -73,6 +76,7 @@ def _all_groups() -> list[dict]:
             "label":        label or f"group {r['group_id']}",
             "score":        mi.get("score"),
             "signals":      {k: mi[k] for k in ("phash","dims","date","type","size","name") if k in mi},
+            "has_video":    bool(r["has_video"]),
         })
     # unified groups arrive pre-sorted by score (group_id order = score order);
     # for legacy strategies keep them after unified, sorted by group_id
@@ -616,6 +620,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .sf.on    { background: #007aff; border-color: #007aff; color: #fff; }
 .sf.on.sf-phash  { background: #b45309; border-color: #b45309; }
 .sf.on.sf-unique { background: #6e6e73; border-color: #6e6e73; }
+.sf.on.sf-video  { background: #6d28d9; border-color: #6d28d9; }
 
 #group-list { flex: 1; overflow-y: auto; }
 .group-item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #f2f2f7;
@@ -742,6 +747,7 @@ video.photo-thumb { background: #000; }
         <span class="sf" data-sig="size">Size</span>
         <span class="sf" data-sig="name">Name</span>
         <span class="sf sf-unique" id="btn-unique" title="Show groups resolved to a single survivor">Unique</span>
+        <span class="sf sf-video"  id="btn-video"  title="Show only groups containing videos">Video</span>
       </div>
     </div>
     <div id="group-list"></div>
@@ -759,6 +765,7 @@ let activeKey      = null;
 let activeSignals  = new Set();
 let currentDecisions = {};   // photo_id -> action, for photos in the active group
 let showResolved   = false;  // when false, hide groups with ≤1 non-discarded photo
+let showOnlyVideo  = false;
 
 const SIGNALS   = ['phash','dims','date','type','size','name'];
 const SIG_LABEL = {phash:'pHash', dims:'Dims', date:'Date', type:'Type', size:'Size', name:'Name'};
@@ -806,11 +813,18 @@ document.getElementById('btn-unique').addEventListener('click', function() {
   renderList();
 });
 
+document.getElementById('btn-video').addEventListener('click', function() {
+  showOnlyVideo = !showOnlyVideo;
+  this.classList.toggle('on', showOnlyVideo);
+  renderList();
+});
+
 // ── render left pane ─────────────────────────────────────────────────────────
 function getFilteredGroups() {
   return allGroups.filter(g => {
     const sigs = g.signals || {};
     if (![...activeSignals].every(s => sigs[s] === true)) return false;
+    if (showOnlyVideo && !g.has_video) return false;
     const survivors = g.num_photos - (g.discard_count || 0);
     if (!showResolved && survivors <= 1) return false;
     if (hideDiscarded && survivors <= 1) return false;

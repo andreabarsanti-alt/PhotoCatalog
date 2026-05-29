@@ -123,11 +123,10 @@ class PhotoCatalogApp(tk.Tk):
     def _browse_db(self):
         init = Path(self.db_path.get()).parent
         if not init.exists():
-            init = DEFAULT_CATALOG_DIR
-        p = filedialog.asksaveasfilename(
-            title="Select or create catalog database",
+            init = DEFAULT_CATALOG_DIR if DEFAULT_CATALOG_DIR.exists() else Path.home()
+        p = filedialog.askopenfilename(
+            title="Open catalog database",
             initialdir=str(init),
-            defaultextension=".db",
             filetypes=[("SQLite database", "*.db"), ("All files", "*.*")],
         )
         if p:
