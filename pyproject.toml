@@ -4,7 +4,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "PhotoCatalog"
-version = "0.0.3"
+version = "0.0.4"
 description = "Find and safely remove duplicate photos across Mac Photos, Lightroom, and disk folders."
 requires-python = ">=3.11"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
     "imagehash",
     "Pillow",
     "pillow-heif",
+    "exifread",
 ]
 
 [project.scripts]
