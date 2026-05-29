@@ -10,7 +10,7 @@ _IMAGE_TYPES = {"JPEG", "JPG", "PNG", "HEIC", "HEIF", "TIFF", "WEBP", "BMP", "GI
 _MOVIE_TYPES = {"MOV", "MP4", "M4V", "AVI", "MKV", "MPEG", "MPG", "3GP", "WEBM"}
 
 
-def add_perceptual_hashes(conn: sqlite3.Connection, batch_size: int = 500) -> tuple[int, int]:
+def add_perceptual_hashes(conn: sqlite3.Connection) -> tuple[int, int]:
     """
     Compute and store perceptual hashes for image photos where perceptual_hash is NULL.
 
@@ -44,7 +44,7 @@ def add_perceptual_hashes(conn: sqlite3.Connection, batch_size: int = 500) -> tu
     hashed = 0
     failed = 0
 
-    for i, row in enumerate(tqdm(rows, desc=f"Hashing {total} images", unit="img")):
+    for row in tqdm(rows, desc=f"Hashing {total} images", unit="img"):
         if not Path(row["source_file"]).is_file():
             failed += 1
             continue
@@ -55,15 +55,12 @@ def add_perceptual_hashes(conn: sqlite3.Connection, batch_size: int = 500) -> tu
                 "UPDATE photos SET perceptual_hash = ? WHERE id = ?",
                 (h, row["id"]),
             )
+            conn.commit()
             hashed += 1
         except Exception as e:
             tqdm.write(f"  Hash failed: {row['source_file']} — {type(e).__name__}: {e}")
             failed += 1
 
-        if i % batch_size == 0:
-            conn.commit()
-
-    conn.commit()
     return hashed, failed
 
 
