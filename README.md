@@ -1,4 +1,4 @@
-# PhotoCatalog  v0.0.9
+# PhotoCatalog  v0.0.10
 
 **Find and safely remove duplicate photos across Mac Photos, Lightroom Classic, and disk folders.**
 
