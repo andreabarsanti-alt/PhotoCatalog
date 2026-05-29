@@ -38,7 +38,9 @@ def ingest(conn: sqlite3.Connection, library_path: Optional[str] = None) -> tupl
 
     local = 0
     cloud = 0
-    rows = []
+    inserted_total = 0
+    skipped_total = 0
+    batch: list[dict] = []
 
     for p in tqdm(photos, desc="Reading metadata", unit="photo"):
         path = p.path
@@ -52,7 +54,7 @@ def ingest(conn: sqlite3.Connection, library_path: Optional[str] = None) -> tupl
 
         exif = p.exif_info
 
-        rows.append({
+        batch.append({
             "source_file":       source_file,
             "source_type":       "MacPhotos",
             "source_catalog":    catalog,
@@ -84,9 +86,19 @@ def ingest(conn: sqlite3.Connection, library_path: Optional[str] = None) -> tupl
             "mp_is_burst":       int(p.burst),
         })
 
-    inserted, skipped = insert_photos(conn, rows)
+        if len(batch) >= 200:
+            ins, skp = insert_photos(conn, batch)
+            inserted_total += ins
+            skipped_total += skp
+            batch = []
+
+    if batch:
+        ins, skp = insert_photos(conn, batch)
+        inserted_total += ins
+        skipped_total += skp
+
     print(f"  Local files: {local} | Cloud-only (macphotos://): {cloud}")
-    return inserted, skipped
+    return inserted_total, skipped_total
 
 
 def _safe_score(p) -> Optional[float]:

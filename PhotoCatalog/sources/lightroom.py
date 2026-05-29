@@ -96,7 +96,10 @@ def ingest(conn: sqlite3.Connection, lrcat_path: str) -> tuple[int, int]:
     finally:
         lr_conn.close()
 
-    rows = []
+    inserted_total = 0
+    skipped_total = 0
+    batch: list[dict] = []
+
     for r in tqdm(raw_rows, desc="Processing rows", unit="photo"):
         source_file = r["source_file"]
         if not source_file:
@@ -111,7 +114,7 @@ def ingest(conn: sqlite3.Connection, lrcat_path: str) -> tuple[int, int]:
             if p.is_file():
                 file_size = p.stat().st_size
 
-        rows.append({
+        batch.append({
             "source_file":      source_file,
             "source_type":      "Lightroom",
             "source_catalog":   str(lrcat),
@@ -138,4 +141,15 @@ def ingest(conn: sqlite3.Connection, lrcat_path: str) -> tuple[int, int]:
             "lr_grayscale":     r["lr_grayscale"],
         })
 
-    return insert_photos(conn, rows)
+        if len(batch) >= 200:
+            ins, skp = insert_photos(conn, batch)
+            inserted_total += ins
+            skipped_total += skp
+            batch = []
+
+    if batch:
+        ins, skp = insert_photos(conn, batch)
+        inserted_total += ins
+        skipped_total += skp
+
+    return inserted_total, skipped_total

@@ -182,14 +182,27 @@ def ingest(conn: sqlite3.Connection, folder_path: str) -> tuple[int, int]:
     ]
     print(f"{len(files)} found")
 
-    rows = []
+    inserted_total = 0
+    skipped_total = 0
+    batch: list[dict] = []
+
     for path in tqdm(files, desc="Extracting metadata", unit="file"):
         try:
-            rows.append(_extract(path))
+            row = _extract(path)
+            row["source_catalog"] = str(folder_path)
+            batch.append(row)
         except Exception as e:
             tqdm.write(f"  Skipped {path} — {type(e).__name__}: {e}")
 
-    for row in rows:
-        row["source_catalog"] = str(folder_path)
+        if len(batch) >= 200:
+            ins, skp = insert_photos(conn, batch)
+            inserted_total += ins
+            skipped_total += skp
+            batch = []
 
-    return insert_photos(conn, rows)
+    if batch:
+        ins, skp = insert_photos(conn, batch)
+        inserted_total += ins
+        skipped_total += skp
+
+    return inserted_total, skipped_total
