@@ -31,6 +31,62 @@ from .db import connect, init_db
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint helpers  (used by find_unified only)
+# ---------------------------------------------------------------------------
+
+_CHECKPOINT_TABLE = "_uf_checkpoint"
+
+
+def _checkpoint_save(conn: sqlite3.Connection, min_score: int, photo_count: int,
+                     scored: list) -> None:
+    conn.execute(f"""
+        CREATE TABLE IF NOT EXISTS {_CHECKPOINT_TABLE} (
+            strategy    TEXT PRIMARY KEY,
+            min_score   INTEGER,
+            photo_count INTEGER,
+            data        TEXT,
+            saved_at    TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    data = json.dumps([[s, pids, sigs] for s, pids, sigs in scored])
+    conn.execute(f"""
+        INSERT OR REPLACE INTO {_CHECKPOINT_TABLE}
+            (strategy, min_score, photo_count, data)
+        VALUES ('unified', ?, ?, ?)
+    """, (min_score, photo_count, data))
+    conn.commit()
+
+
+def _checkpoint_load(conn: sqlite3.Connection, min_score: int,
+                     photo_count: int) -> list | None:
+    """Return saved scored groups if checkpoint matches current params, else None."""
+    try:
+        row = conn.execute(f"""
+            SELECT min_score, photo_count, data
+            FROM   {_CHECKPOINT_TABLE}
+            WHERE  strategy = 'unified'
+        """).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    if row["min_score"] != min_score or row["photo_count"] != photo_count:
+        # Parameters or DB changed — stale checkpoint, discard it
+        conn.execute(f"DELETE FROM {_CHECKPOINT_TABLE} WHERE strategy = 'unified'")
+        conn.commit()
+        return None
+    return [[item[0], item[1], item[2]] for item in json.loads(row["data"])]
+
+
+def _checkpoint_clear(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute(f"DELETE FROM {_CHECKPOINT_TABLE} WHERE strategy = 'unified'")
+        conn.commit()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Unified strategy (recommended)
 # ---------------------------------------------------------------------------
 
@@ -57,94 +113,102 @@ def find_unified(conn: sqlite3.Connection, min_score: int = 2) -> tuple[int, int
     Groups with score < min_score are discarded.
     Groups are inserted in descending score order → group #1 = strongest.
     """
-    conn.execute("DELETE FROM duplicate_groups WHERE strategy = 'unified'")
+    photo_count = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
 
-    rows = conn.execute("""
-        SELECT id, file_name, original_filename, date_original, file_type,
-               file_size, image_width, image_height, perceptual_hash
-        FROM   photos
-    """).fetchall()
-
-    total = len(rows)
-    print(f"  Loaded {total:,} photos")
-
-    photos = {r["id"]: dict(r) for r in rows}
-
-    # ── Union-Find ──────────────────────────────────────────────────────────
-    parent = {pid: pid for pid in photos}
-
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a: int, b: int) -> None:
-        a, b = find(a), find(b)
-        if a != b:
-            parent[a] = b
-
-    def union_list(ids: list) -> None:
-        for i in range(1, len(ids)):
-            union(ids[0], ids[i])
-
-    # Signal 1 — perceptual hash
-    hash_idx: dict = defaultdict(list)
-    for pid, p in photos.items():
-        if p["perceptual_hash"]:
-            hash_idx[p["perceptual_hash"]].append(pid)
-    for ids in hash_idx.values():
-        if len(ids) >= 2:
-            union_list(ids)
-
-    # Signal 2 — dimensions + date + type  (rotation-aware)
-    meta_idx: dict = defaultdict(list)
-    for pid, p in photos.items():
-        w, h, d, t = p["image_width"], p["image_height"], p["date_original"], p["file_type"]
-        if w and h and d and t:
-            key = (min(w, h), max(w, h), d, t.upper())
-            meta_idx[key].append(pid)
-    for ids in meta_idx.values():
-        if len(ids) >= 2:
-            union_list(ids)
-
-    # Signal 3 — filename stem + date minute
-    stem_idx: dict = defaultdict(set)
-    for pid, p in photos.items():
-        d = p["date_original"]
-        if not d:
-            continue
-        dmin = d[:16]
-        for fn in (p["file_name"], p["original_filename"]):
-            if fn:
-                stem = Path(fn).stem.lower()
-                if stem:
-                    stem_idx[(stem, dmin)].add(pid)
-    for ids_set in stem_idx.values():
-        ids = list(ids_set)
-        if len(ids) >= 2:
-            union_list(ids)
-
-    print("  Grouping connected components…")
-
-    # ── Collect groups ───────────────────────────────────────────────────────
-    components: dict = defaultdict(list)
-    for pid in photos:
-        components[find(pid)].append(pid)
-
-    candidates = [pids for pids in components.values() if len(pids) >= 2]
-
-    # ── Score ────────────────────────────────────────────────────────────────
+    # ── Check for a saved checkpoint from a previous interrupted run ─────────
     scored: list[tuple] = []
-    for pids in tqdm(candidates, desc=f"Scoring {len(candidates):,} candidate groups", unit="group"):
-        score, signals = _score_group(pids, photos)
-        if score >= min_score:
-            scored.append((score, pids, signals))
+    checkpoint = _checkpoint_load(conn, min_score, photo_count)
+    if checkpoint is not None:
+        scored = [(s, pids, sigs) for s, pids, sigs in checkpoint]
+        print(f"  Resuming from checkpoint: {len(scored):,} groups already scored")
+    else:
+        rows = conn.execute("""
+            SELECT id, file_name, original_filename, date_original, file_type,
+                   file_size, image_width, image_height, perceptual_hash
+            FROM   photos
+        """).fetchall()
 
-    scored.sort(key=lambda x: -x[0])   # descending: group #1 = strongest
-    print(f"  Keeping {len(scored):,} groups with score ≥ {min_score}")
+        total = len(rows)
+        print(f"  Loaded {total:,} photos")
 
-    # ── Insert ───────────────────────────────────────────────────────────────
+        photos = {r["id"]: dict(r) for r in rows}
+
+        # ── Union-Find ──────────────────────────────────────────────────────
+        parent = {pid: pid for pid in photos}
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: int, b: int) -> None:
+            a, b = find(a), find(b)
+            if a != b:
+                parent[a] = b
+
+        def union_list(ids: list) -> None:
+            for i in range(1, len(ids)):
+                union(ids[0], ids[i])
+
+        # Signal 1 — perceptual hash
+        hash_idx: dict = defaultdict(list)
+        for pid, p in photos.items():
+            if p["perceptual_hash"]:
+                hash_idx[p["perceptual_hash"]].append(pid)
+        for ids in hash_idx.values():
+            if len(ids) >= 2:
+                union_list(ids)
+
+        # Signal 2 — dimensions + date + type  (rotation-aware)
+        meta_idx: dict = defaultdict(list)
+        for pid, p in photos.items():
+            w, h, d, t = p["image_width"], p["image_height"], p["date_original"], p["file_type"]
+            if w and h and d and t:
+                key = (min(w, h), max(w, h), d, t.upper())
+                meta_idx[key].append(pid)
+        for ids in meta_idx.values():
+            if len(ids) >= 2:
+                union_list(ids)
+
+        # Signal 3 — filename stem + date minute
+        stem_idx: dict = defaultdict(set)
+        for pid, p in photos.items():
+            d = p["date_original"]
+            if not d:
+                continue
+            dmin = d[:16]
+            for fn in (p["file_name"], p["original_filename"]):
+                if fn:
+                    stem = Path(fn).stem.lower()
+                    if stem:
+                        stem_idx[(stem, dmin)].add(pid)
+        for ids_set in stem_idx.values():
+            ids = list(ids_set)
+            if len(ids) >= 2:
+                union_list(ids)
+
+        print("  Grouping connected components…")
+
+        # ── Collect groups ───────────────────────────────────────────────────
+        components: dict = defaultdict(list)
+        for pid in photos:
+            components[find(pid)].append(pid)
+
+        candidates = [pids for pids in components.values() if len(pids) >= 2]
+
+        # ── Score ────────────────────────────────────────────────────────────
+        for pids in tqdm(candidates, desc=f"Scoring {len(candidates):,} candidate groups", unit="group"):
+            score, signals = _score_group(pids, photos)
+            if score >= min_score:
+                scored.append((score, pids, signals))
+
+        scored.sort(key=lambda x: -x[0])   # descending: group #1 = strongest
+        print(f"  {len(scored):,} groups with score ≥ {min_score} — saving checkpoint…")
+        _checkpoint_save(conn, min_score, photo_count, scored)
+
+    # ── Apply: wipe old results and insert new ones (single transaction) ─────
+    conn.execute("DELETE FROM duplicate_groups WHERE strategy = 'unified'")
     inserts = []
     for group_id, (score, pids, signals) in enumerate(scored, start=1):
         info = json.dumps({"score": score, **signals})
@@ -156,6 +220,7 @@ def find_unified(conn: sqlite3.Connection, min_score: int = 2) -> tuple[int, int
         inserts,
     )
     conn.commit()
+    _checkpoint_clear(conn)
     return len(scored), len(inserts)
 
 

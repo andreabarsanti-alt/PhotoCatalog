@@ -19,6 +19,16 @@ import sys
 # separate Python interpreter.  Must be first, before any heavy imports.
 # ---------------------------------------------------------------------------
 if len(sys.argv) > 1 and sys.argv[1] == "--photocatalog-cli":
+    # Tell macOS this is a background helper — prevents a new Dock icon / window
+    # from appearing each time the GUI spawns a subprocess.
+    try:
+        import AppKit  # noqa: PLC0415
+        AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+            AppKit.NSApplicationActivationPolicyProhibited
+        )
+    except Exception:
+        pass
+
     subcmd = sys.argv[2]
     sys.argv = [sys.argv[0]] + sys.argv[3:]
     if subcmd == "build-catalog":
