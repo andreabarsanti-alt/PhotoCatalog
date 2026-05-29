@@ -1,4 +1,4 @@
-# PhotoCatalog  v0.0.4
+# PhotoCatalog  v0.0.8
 
 **Find and safely remove duplicate photos across Mac Photos, Lightroom Classic, and disk folders.**
 
@@ -23,11 +23,10 @@ them in a web-based UI where you can mark each copy as Keep or Discard.
 git clone git@github.com:andreabarsanti-alt/PhotoCatalog.git
 cd PhotoCatalog
 python3 -m venv .venv
-.venv/bin/pip install osxphotos imagehash Pillow pillow-heif exifread
+.venv/bin/pip install osxphotos imagehash Pillow pillow-heif exifread tqdm
 
 # Launch the GUI
 .venv/bin/python3 photocatalog_gui.py
-# Or double-click PhotoCatalog.command in Finder
 ```
 
 > No external tools required — folder ingestion uses the pure-Python `exifread` library.
@@ -36,23 +35,22 @@ python3 -m venv .venv
 
 ## GUI quick-start
 
-The GUI has five tabs:
+The GUI has four tabs:
 
 | Tab | What it does |
 |---|---|
 | **Build Catalog** | Ingest from Mac Photos, Lightroom, or a folder |
-| **Find Duplicates** | Run duplicate-detection strategies and store results |
+| **Find Duplicates** | Run duplicate-detection and store results |
 | **Browse Duplicates** | Launch a local web UI to review groups and mark Keep / Discard |
-| **Examples** | Pre-filled example workflows — click Load then switch tabs |
 | **About** | Version info and in-app update checker |
 
 ### Typical workflow
 
 1. **Build Catalog** — add all your photo sources (repeat for each source; rows are never
-   duplicated across runs)
-2. **Find Duplicates** → unified strategy, min-score 2
+   duplicated across runs; safe to interrupt and resume)
+2. **Find Duplicates** — runs the unified strategy automatically
 3. **Browse Duplicates** → review each group, mark one copy as Keep and the rest as Discard
-4. *(future)* Resolve — safe bulk-move of discarded copies
+4. *(coming soon)* Resolve — safe bulk-move of discarded copies
 
 ---
 
@@ -72,9 +70,10 @@ All commands use the project venv:
 #   --download-limit N Cap iCloud downloads per run
 
 # Find duplicates
-.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db                  # unified (recommended)
-.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --min-score 4    # stricter
-.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --strategy all   # all strategies
+.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db               # unified (recommended)
+.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --strategy phash
+.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --strategy metadata
+.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --strategy filename
 
 # Browse web UI
 .venv/bin/python3 -m PhotoCatalog.serve_duplicates --db catalog.db
@@ -91,34 +90,46 @@ All commands use the project venv:
 | `metadata` | Same dimensions + date + file type | Rotation-aware; fast |
 | `filename` | Same filename stem + same capture minute | Handles Mac Photos UUID renaming |
 
-Unified **score** = `(10 + n_other)` if phash matches, else `n_other` (0–5 other signals).
-Default `--min-score 2` keeps groups that agree on at least two signals.  Group #1 = strongest.
-
 ---
 
-## Duplicate browser — selection actions
+## Duplicate browser — filter and selection actions
 
-The web UI top bar provides bulk actions scoped to the **currently visible groups** (respects all active filters):
+The left pane has **signal filter badges** — click one or more to narrow the list to groups
+where those signals agree:
 
-**General actions**
+| Badge | Meaning |
+|---|---|
+| pHash | All photos share the same perceptual hash |
+| Dims | Same rotation-aware width/height |
+| Date | Same capture date |
+| Type | Same file type |
+| Size | Same file size |
+| Name | Common filename stem |
+| Unique | Show groups already reduced to a single survivor |
+| Video | Show only groups containing at least one video file |
+
+The top bar provides **bulk actions** scoped to the currently visible groups:
 
 | Action | Effect |
 |---|---|
 | Reset selection | Clear all Keep / Discard decisions |
 | Keep unique | In groups where exactly one photo is not discarded, mark it Keep |
-
-**Selection actions** *(operate only on undecided photos within each group)*
-
-| Action | Effect |
-|---|---|
 | Prefer filename… | Discard photos whose filename doesn't match a Python regex |
 | Prefer path… | Same, matched against the full file path |
 | Prefer type… | Same, matched against file type (e.g. `DNG`, `JPEG`) |
-| Prefer higher resolution | Discard photos below the max(width, height) in the group; ties kept |
-| Prefer bigger | Discard photos below the largest file size in the group; ties kept |
+| Prefer higher resolution | Discard photos below the max(width, height) in the group |
+| Prefer bigger | Discard photos below the largest file size in the group |
 
-The **Unique** filter badge (in the signal filter row) hides groups that have been reduced to a
-single survivor — keeping the list clean after bulk actions.
+---
+
+## Resumable operations
+
+All long-running operations are safe to interrupt (Ctrl-C) and resume:
+
+- **Folder ingestion** — already-ingested files are detected from the DB and skipped entirely;
+  the progress bar shows 0→100% of the remaining work only
+- **Find duplicates** — scoring results are checkpointed after computation; a re-run reloads
+  the checkpoint and skips straight to applying results if the catalog hasn't changed
 
 ---
 
@@ -146,12 +157,6 @@ make dmg
 
 # Publish to GitHub Releases (tags, uploads DMG, generates release notes)
 make release
-
-# Bump version, then release
-make bump VERSION=0.0.4
-git add PhotoCatalog/__init__.py pyproject.toml
-git commit -m "Bump version to 0.0.4"
-make release
 ```
 
 ---
@@ -162,7 +167,9 @@ make release
 - [x] Perceptual hash + metadata + filename duplicate detection
 - [x] Web UI to browse and mark duplicates
 - [x] Bulk selection actions (prefer filename/path/type/resolution/size, keep unique)
+- [x] Video filter in duplicate browser
 - [x] GUI launcher with in-app updater
 - [x] Self-contained app bundle (no external tools required)
+- [x] Resumable ingestion and duplicate-finding
 - [ ] Resolve — bulk-move discarded copies to a holding folder
 - [ ] Multi-machine export — portable DB or sync mechanism

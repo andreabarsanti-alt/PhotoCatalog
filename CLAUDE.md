@@ -17,8 +17,8 @@ PhotoCatalog/           # Python package
     sources/
         mac_photos.py   # Ingest via osxphotos Python library
         lightroom.py    # Ingest via direct SQLite read of .lrcat
-        folder.py       # Ingest via exiftool subprocess
-archive/                # Old JSON-based codebase (reference only)
+        folder.py       # Ingest via exifread (pure Python, no external tools)
+photocatalog_gui.py     # Tkinter GUI launcher (also PyInstaller entry point)
 ```
 
 ## Python environment
@@ -49,16 +49,36 @@ Two tables, one view:
 
 **`photos_with_groups` view** — joins photos with its three group IDs as convenience columns (`phash_group_id`, `meta_group_id`, `filename_group_id`)
 
+**`_uf_checkpoint`** — internal table used by `find_unified` to persist scored groups between runs:
+- Dropped automatically after a successful apply; presence means a previous run was interrupted after scoring but before committing results
+
 ## Key design decisions
 - **SQLite not JSON**: the old codebase used JSON files; switching to SQLite enables incremental updates, indexed queries, and joins across sources
 - **osxphotos Python library** (not CLI): used for Mac Photos ingestion — abstracts the Photos.sqlite schema which changes between macOS versions
+- **exifread not exiftool**: folder ingestion uses pure-Python `exifread`; no external binary dependency
 - **original_filename vs file_name**: MacPhotos renames files to UUIDs on disk; `file_name` is the UUID, `original_filename` is what was imported. Both are checked in filename duplicate strategy
 - **Rotation-aware metadata matching**: uses MIN/MAX of width/height so portrait and landscape versions match
 - **phash(hash_size=16)**: 256-bit hash (64 hex chars), Hamming distance ≤ 10 = likely duplicate
 - **Hashing runs automatically at ingest**: `build_catalog.py` always calls `add_perceptual_hashes()` after ingestion; only files accessible on disk at that moment are hashed
 - **Lightroom file_size**: `AgLibraryFileAssetMetadata` and `AgLibraryFileDigest` are empty in this catalog; sizes come from `AgParsedImportHash` (via `id_global`, ~37% coverage) then fall back to `os.stat()` for locally accessible files
 - **insert_photos uses union of all row keys**: handles heterogeneous batches correctly
-- **Unified duplicate strategy**: union-find across 3 signals (phash, dims+date+type, stem+date_minute), then score each group on 6 binary attributes; score = (10+n) if phash else n
+- **Unified duplicate strategy**: union-find across 3 signals (phash, dims+date+type, stem+date_minute), then score each group on 6 binary attributes; score = (10+n) if phash else n; min_score = 2 (internal constant `_MIN_SCORE`, not exposed to users)
+- **`caffeinate -i`**: all GUI-spawned subprocesses are wrapped with `caffeinate -i` to prevent macOS idle sleep during long ingestion or scoring runs
+- **Subprocess window fix**: the `--photocatalog-cli` passthrough sets `NSApplicationActivationPolicyProhibited` via AppKit before any GUI code runs, preventing macOS from opening a new Dock icon for each subprocess
+
+## Resumable operations
+Both long-running operations are safe to interrupt and resume:
+
+**Folder ingestion** (`sources/folder.py`):
+- Before walking, queries `SELECT source_file FROM photos WHERE source_catalog = ?`
+- Filters the file list to only unprocessed files — already-ingested files are skipped entirely (no EXIF extraction, no INSERT attempt)
+- Progress bar shows 0→100% of remaining work; prints "Resuming: N already ingested, M remaining"
+
+**Find duplicates** (`find_duplicates.py`, unified strategy only):
+- After scoring completes, saves results to `_uf_checkpoint` table and commits
+- On next run: checks checkpoint validity (same photo count + same `_MIN_SCORE`); if valid, skips union-find and scoring entirely
+- If photo count changed or checkpoint is stale, discards it and runs fresh
+- After successful `DELETE + INSERT` into `duplicate_groups`, drops the checkpoint
 
 ## Unified scoring (find_duplicates.py)
 Signals scored per group:
@@ -71,7 +91,15 @@ Signals scored per group:
 
 `score = (10 + n_others) if phash else n_others`  (n_others = count of other signals that match)
 
-Groups with score < 2 are discarded. Groups inserted in descending score order → group #1 = strongest.
+Groups with score < `_MIN_SCORE` (2) are discarded. Groups inserted in descending score order → group #1 = strongest. Score is not exposed to users — the signal filter badges in the web UI provide equivalent filtering interactively.
+
+## Web UI filters (serve_duplicates.py)
+Signal filter badges in the left pane narrow the group list in real time:
+- `pHash`, `Dims`, `Date`, `Type`, `Size`, `Name` — standard signal badges (from match_info)
+- `Unique` — show groups already reduced to a single survivor (resolved groups)
+- `Video` — show only groups containing at least one video file (MOV, MP4, M4V, AVI, MKV…)
+
+`has_video` is computed in the `_all_groups()` SQL query via `MAX(CASE WHEN UPPER(file_type) IN (...) THEN 1 ELSE 0 END)`.
 
 ## How to run
 ```bash
@@ -80,14 +108,17 @@ Groups with score < 2 are discarded. Groups inserted in descending score order �
 .venv/bin/python3 -m PhotoCatalog.build_catalog --source Lightroom --db catalog.db --path /path/to/catalog.lrcat
 .venv/bin/python3 -m PhotoCatalog.build_catalog --source Folder    --db catalog.db --path /Volumes/DISK/Photos
 # Hashing runs automatically after each ingest; no --hash flag needed.
+# Safe to interrupt and re-run — already-ingested files are skipped.
 
-# Find duplicates (unified strategy is the default and recommended)
+# Find duplicates (unified is the default and recommended)
 .venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db
-.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --strategy all  # also runs phash/metadata/filename
+# Focused single-signal runs (faster, for debugging):
+.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --strategy phash
+.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --strategy metadata
+.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --strategy filename
 
 # Browse duplicate groups (terminal)
 .venv/bin/python3 -m PhotoCatalog.explore_duplicates --db catalog.db
-.venv/bin/python3 -m PhotoCatalog.explore_duplicates --db catalog.db --strategy unified
 .venv/bin/python3 -m PhotoCatalog.explore_duplicates --db catalog.db --report report.html
 
 # Web UI (two-pane browser with image previews)
@@ -96,8 +127,9 @@ Groups with score < 2 are discarded. Groups inserted in descending score order �
 
 ## Dependencies
 - `osxphotos` — Mac Photos library access
-- `exiftool` (CLI) — metadata extraction for folder ingestion
-- `imagehash`, `Pillow`, `pillow-heif` — perceptual hashing
+- `exifread`, `Pillow`, `pillow-heif` — metadata and image handling for folder ingestion
+- `imagehash` — perceptual hashing
+- `tqdm` — progress bars
 
 ## Next steps (in order)
 1. **Resolve duplicates** — safe strategy to mark which copy to keep (prefer MacPhotos > Lightroom > Folder, tiebreak by file size), move or record discards

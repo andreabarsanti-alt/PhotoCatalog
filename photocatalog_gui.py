@@ -312,30 +312,13 @@ class PhotoCatalogApp(tk.Tk):
             ("phash",    "Perceptual hash only — exact pixel-level matches"),
             ("metadata", "Metadata only — same dimensions + date + file type"),
             ("filename", "Filename only — same filename stem + date minute"),
-            ("all",      "All strategies — runs unified then each individual strategy"),
         ]:
             ttk.Radiobutton(sf, text=label, value=val, variable=self._strategy).pack(
                 anchor="w", pady=2
             )
 
-        score_f = ttk.LabelFrame(
-            tab, text="Minimum confidence score  (unified strategy)", padding=6
-        )
-        score_f.grid(row=1, column=0, sticky="ew", pady=(0, 6))
-        score_row = ttk.Frame(score_f)
-        score_row.pack(anchor="w")
-        self._min_score = tk.IntVar(value=2)
-        ttk.Spinbox(score_row, from_=1, to=15, textvariable=self._min_score, width=5).pack(
-            side="left"
-        )
-        ttk.Label(
-            score_row,
-            text="   range 1–15, default 2  (higher = fewer, stronger matches)",
-            foreground="gray",
-        ).pack(side="left")
-
         ttk.Button(tab, text="▶  Find Duplicates", command=self._run_find).grid(
-            row=2, column=0, pady=10
+            row=1, column=0, pady=10
         )
 
     def _run_find(self):
@@ -346,12 +329,10 @@ class PhotoCatalogApp(tk.Tk):
         prefix = _python_cmd()
         if getattr(sys, "frozen", False):
             cmd = prefix + ["find-duplicates", "--db", db,
-                            "--strategy", self._strategy.get(),
-                            "--min-score", str(self._min_score.get())]
+                            "--strategy", self._strategy.get()]
         else:
             cmd = prefix + ["PhotoCatalog.find_duplicates", "--db", db,
-                            "--strategy", self._strategy.get(),
-                            "--min-score", str(self._min_score.get())]
+                            "--strategy", self._strategy.get()]
         self._run_cmd(cmd)
 
     # ── Browse Duplicates tab ─────────────────────────────────────────────────
@@ -679,7 +660,7 @@ class PhotoCatalogApp(tk.Tk):
 
         def worker():
             self._proc = subprocess.Popen(
-                cmd,
+                ["caffeinate", "-i"] + cmd,
                 cwd=str(SCRIPT_DIR),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

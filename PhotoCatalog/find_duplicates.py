@@ -90,7 +90,10 @@ def _checkpoint_clear(conn: sqlite3.Connection) -> None:
 # Unified strategy (recommended)
 # ---------------------------------------------------------------------------
 
-def find_unified(conn: sqlite3.Connection, min_score: int = 2) -> tuple[int, int]:
+_MIN_SCORE = 2  # internal threshold — groups with fewer matching signals are discarded
+
+def find_unified(conn: sqlite3.Connection) -> tuple[int, int]:
+    min_score = _MIN_SCORE
     """
     Find duplicates using a union-find across all three signals, then score
     each resulting group on 6 binary attributes.
@@ -438,13 +441,9 @@ def main() -> None:
     parser.add_argument("--db", required=True)
     parser.add_argument(
         "--strategy", default="unified",
-        choices=["unified", "phash", "metadata", "filename", "all"],
-        help="unified (default) runs the scored union-find. "
-             "'all' runs unified + the three individual strategies.",
-    )
-    parser.add_argument(
-        "--min-score", type=int, default=2, dest="min_score",
-        help="Minimum confidence score to keep a group (default: 2, range 1-15).",
+        choices=["unified", "phash", "metadata", "filename"],
+        help="unified (default) — scored union-find across all signals. "
+             "phash/metadata/filename run a single focused signal.",
     )
     args = parser.parse_args()
 
@@ -452,16 +451,10 @@ def main() -> None:
     init_db(conn)
 
     run = {
-        "unified":  [("unified",  lambda c: find_unified(c, args.min_score))],
+        "unified":  [("unified",  find_unified)],
         "phash":    [("phash",    find_by_phash)],
         "metadata": [("metadata", find_by_metadata)],
         "filename": [("filename", find_by_filename)],
-        "all":      [
-            ("unified",  lambda c: find_unified(c, args.min_score)),
-            ("phash",    find_by_phash),
-            ("metadata", find_by_metadata),
-            ("filename", find_by_filename),
-        ],
     }[args.strategy]
 
     try:
