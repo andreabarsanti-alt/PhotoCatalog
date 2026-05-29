@@ -174,13 +174,23 @@ def ingest(conn: sqlite3.Connection, folder_path: str) -> tuple[int, int]:
         raise FileNotFoundError(f"Folder not found: {folder}")
 
     print("Scanning for image files...", end=" ", flush=True)
-    files = [
+    all_files = [
         Path(dirpath) / fname
         for dirpath, _, filenames in os.walk(folder)
         for fname in filenames
         if Path(fname).suffix.lower() in IMAGE_EXTENSIONS
     ]
-    print(f"{len(files)} found")
+    print(f"{len(all_files)} found")
+
+    already_done = {
+        row[0] for row in conn.execute(
+            "SELECT source_file FROM photos WHERE source_catalog = ?",
+            (str(folder_path),),
+        )
+    }
+    files = [f for f in all_files if str(f) not in already_done]
+    if already_done:
+        print(f"Resuming: {len(already_done)} already ingested, {len(files)} remaining")
 
     inserted_total = 0
     skipped_total = 0
