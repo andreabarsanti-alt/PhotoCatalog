@@ -295,7 +295,7 @@ class PhotoCatalogApp(tk.Tk):
         if lim:
             cmd += ["--download-limit", lim]
 
-        self._run_cmd(cmd)
+        self._run_cmd(cmd, caffeinate=True)
 
     # ── Find Duplicates tab ───────────────────────────────────────────────────
 
@@ -333,7 +333,7 @@ class PhotoCatalogApp(tk.Tk):
         else:
             cmd = prefix + ["PhotoCatalog.find_duplicates", "--db", db,
                             "--strategy", self._strategy.get()]
-        self._run_cmd(cmd)
+        self._run_cmd(cmd, caffeinate=True)
 
     # ── Browse Duplicates tab ─────────────────────────────────────────────────
 
@@ -644,7 +644,7 @@ class PhotoCatalogApp(tk.Tk):
 
     # ── subprocess runner ─────────────────────────────────────────────────────
 
-    def _run_cmd(self, cmd: list[str]):
+    def _run_cmd(self, cmd: list[str], caffeinate: bool = False):
         if self._proc and self._proc.poll() is None:
             if not messagebox.askyesno(
                 "Already running",
@@ -660,7 +660,7 @@ class PhotoCatalogApp(tk.Tk):
 
         def worker():
             self._proc = subprocess.Popen(
-                ["caffeinate", "-i"] + cmd,
+                (["caffeinate", "-i"] if caffeinate else []) + cmd,
                 cwd=str(SCRIPT_DIR),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
