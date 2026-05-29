@@ -29,8 +29,13 @@ if len(sys.argv) > 1 and sys.argv[1] == "--photocatalog-cli":
     except Exception:
         pass
 
-    subcmd = sys.argv[2]
-    sys.argv = [sys.argv[0]] + sys.argv[3:]
+    _known = {"build-catalog", "find-duplicates", "serve-duplicates"}
+    _rest = sys.argv[2:]
+    # Strip any bootloader-injected flags before the actual subcommand
+    while _rest and _rest[0].startswith("-") and _rest[0] not in _known:
+        _rest = _rest[1:]
+    subcmd = _rest[0] if _rest else ""
+    sys.argv = [sys.argv[0]] + (_rest[1:] if _rest else [])
     if subcmd == "build-catalog":
         from PhotoCatalog.build_catalog import main
     elif subcmd == "find-duplicates":
@@ -38,7 +43,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "--photocatalog-cli":
     elif subcmd == "serve-duplicates":
         from PhotoCatalog.serve_duplicates import main
     else:
-        print(f"Unknown sub-command: {subcmd}", file=sys.stderr)
+        print(f"Unknown sub-command: {subcmd!r}  (sys.argv was: {sys.argv!r})", file=sys.stderr)
         sys.exit(1)
     main()
     sys.exit(0)
