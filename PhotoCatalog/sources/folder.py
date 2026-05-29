@@ -2,7 +2,7 @@
 import logging
 import os
 import sqlite3
-import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -11,7 +11,9 @@ import exifread
 from PIL import Image
 from tqdm import tqdm
 
-_exr_log = logging.getLogger("exifread")
+# Suppress exifread's chatty logger — we catch real errors ourselves.
+# Must be done before any threads call exifread.
+logging.getLogger("exifread").setLevel(logging.ERROR)
 
 from ..db import insert_photos
 
@@ -53,7 +55,6 @@ def _tag_float(tags: dict, key: str) -> Optional[float]:
     if val is None:
         return None
     try:
-        # exifread returns IfdTag; .values is a list of Ratio objects
         v = val.values[0]
         return float(v.num) / float(v.den) if hasattr(v, "num") else float(v)
     except Exception:
@@ -108,7 +109,7 @@ def _stat_date(ts: float) -> str:
 
 
 def _extract(path: Path) -> dict:
-    """Extract metadata from a single file."""
+    """Extract metadata from a single file. Thread-safe."""
     stat = path.stat()
     suffix = path.suffix.lower()
     row: dict = {
@@ -120,26 +121,12 @@ def _extract(path: Path) -> dict:
         "date_modified":  _stat_date(stat.st_mtime),
     }
 
-    # EXIF via exifread (works for JPEG, TIFF, and most RAW formats)
     tags: dict = {}
-    _captured: list[str] = []
-
-    class _Capture(logging.Handler):
-        def emit(self, record):
-            _captured.append(record.getMessage())
-
-    _h = _Capture()
-    _exr_log.addHandler(_h)
     try:
         with open(path, "rb") as f:
             tags = exifread.process_file(f, details=False)
-    except Exception as e:
-        _captured.append(f"{type(e).__name__}: {e}")
-    finally:
-        _exr_log.removeHandler(_h)
-
-    for msg in _captured:
-        print(f"  EXIF [{path.name}]: {msg}", file=sys.stderr)
+    except Exception:
+        pass  # tags stays empty; dates/camera fields will be None
 
     row["date_original"] = _exif_date(tags, "EXIF DateTimeOriginal") or _exif_date(tags, "EXIF DateTimeDigitized")
     row["date_created"]  = _exif_date(tags, "EXIF DateTimeDigitized") or _exif_date(tags, "Image DateTime")
@@ -160,15 +147,15 @@ def _extract(path: Path) -> dict:
         try:
             with Image.open(path) as img:
                 w, h = img.size
-        except Exception as e:
-            print(f"  Dimensions unreadable [{path.name}]: {type(e).__name__}: {e}", file=sys.stderr)
+        except Exception:
+            pass
     row["image_width"]  = w
     row["image_height"] = h
 
     return row
 
 
-def ingest(conn: sqlite3.Connection, folder_path: str) -> tuple[int, int]:
+def ingest(conn: sqlite3.Connection, folder_path: str, workers: int = 0) -> tuple[int, int]:
     folder = Path(folder_path)
     if not folder.exists():
         raise FileNotFoundError(f"Folder not found: {folder}")
@@ -192,23 +179,38 @@ def ingest(conn: sqlite3.Connection, folder_path: str) -> tuple[int, int]:
     if already_done:
         print(f"Resuming: {len(already_done)} already ingested, {len(files)} remaining")
 
+    if not files:
+        return 0, 0
+
+    n_workers = workers if workers > 0 else min(os.cpu_count() or 4, 8)
+
     inserted_total = 0
     skipped_total = 0
     batch: list[dict] = []
 
-    for path in tqdm(files, desc="Extracting metadata", unit="file"):
-        try:
-            row = _extract(path)
-            row["source_catalog"] = str(folder_path)
-            batch.append(row)
-        except Exception as e:
-            tqdm.write(f"  Skipped {path} — {type(e).__name__}: {e}")
+    def _extract_with_catalog(path: Path) -> dict:
+        row = _extract(path)
+        row["source_catalog"] = str(folder_path)
+        return row
 
-        if len(batch) >= 200:
-            ins, skp = insert_photos(conn, batch)
-            inserted_total += ins
-            skipped_total += skp
-            batch = []
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures_map = {pool.submit(_extract_with_catalog, p): p for p in files}
+        label = f"Extracting metadata ({n_workers} threads)"
+        with tqdm(total=len(files), desc=label, unit="file") as bar:
+            for future in as_completed(futures_map):
+                path = futures_map[future]
+                try:
+                    row = future.result()
+                    batch.append(row)
+                except Exception as e:
+                    tqdm.write(f"  Skipped {path} — {type(e).__name__}: {e}")
+                bar.update(1)
+
+                if len(batch) >= 500:
+                    ins, skp = insert_photos(conn, batch)
+                    inserted_total += ins
+                    skipped_total += skp
+                    batch = []
 
     if batch:
         ins, skp = insert_photos(conn, batch)

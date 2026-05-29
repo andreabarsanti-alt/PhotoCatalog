@@ -80,7 +80,7 @@ def main() -> None:
         elif args.source == "Folder":
             if not args.path:
                 parser.error("--path is required for Folder source")
-            inserted, skipped = folder.ingest(conn, folder_path=args.path)
+            inserted, skipped = folder.ingest(conn, folder_path=args.path, workers=args.workers)
 
         record_source(conn, args.source, args.path, inserted)
 

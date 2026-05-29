@@ -99,6 +99,18 @@ CREATE TABLE IF NOT EXISTS sources (
 );
 """
 
+_PHOTOS_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_photos_source_catalog
+    ON photos (source_catalog);
+CREATE INDEX IF NOT EXISTS idx_photos_perceptual_hash
+    ON photos (perceptual_hash)
+    WHERE perceptual_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_photos_meta_signal
+    ON photos (image_width, image_height, date_original, file_type)
+    WHERE image_width IS NOT NULL AND image_height IS NOT NULL
+      AND date_original IS NOT NULL AND file_type IS NOT NULL;
+"""
+
 _DUPLICATE_GROUPS_TABLE = """
 CREATE TABLE IF NOT EXISTS duplicate_groups (
     group_id   INTEGER NOT NULL,
@@ -138,6 +150,10 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")   # safe with WAL; ~2x faster writes
+    conn.execute("PRAGMA cache_size=-65536")    # 64 MB page cache
+    conn.execute("PRAGMA mmap_size=268435456")  # 256 MB memory-mapped I/O
+    conn.execute("PRAGMA temp_store=MEMORY")    # temp tables in RAM
     return conn
 
 
@@ -149,6 +165,7 @@ def init_db(conn: sqlite3.Connection, drop_existing: bool = False) -> None:
         conn.execute("DROP TABLE IF EXISTS sources")
         conn.commit()
     conn.executescript(_PHOTOS_TABLE)
+    conn.executescript(_PHOTOS_INDEXES)
     conn.executescript(_SOURCES_TABLE)
     conn.executescript(_DUPLICATE_GROUPS_TABLE)
     conn.executescript(_DECISIONS_TABLE)

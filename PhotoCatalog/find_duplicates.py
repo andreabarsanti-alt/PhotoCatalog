@@ -127,7 +127,9 @@ def find_unified(conn: sqlite3.Connection) -> tuple[int, int]:
         total = len(rows)
         print(f"  Loaded {total:,} photos")
 
-        photos = {r["id"]: dict(r) for r in rows}
+        # Keep sqlite3.Row objects directly — they support ["key"] access like dicts
+        # but avoid the cost of copying 9 columns × N rows into new Python dicts.
+        photos = {r["id"]: r for r in rows}
 
         # ── Union-Find ──────────────────────────────────────────────────────
         parent = {pid: pid for pid in photos}

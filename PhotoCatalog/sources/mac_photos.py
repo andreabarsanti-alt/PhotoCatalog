@@ -86,7 +86,7 @@ def ingest(conn: sqlite3.Connection, library_path: Optional[str] = None) -> tupl
             "mp_is_burst":       int(p.burst),
         })
 
-        if len(batch) >= 200:
+        if len(batch) >= 1000:
             ins, skp = insert_photos(conn, batch)
             inserted_total += ins
             skipped_total += skp
