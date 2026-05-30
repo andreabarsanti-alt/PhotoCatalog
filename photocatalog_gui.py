@@ -29,7 +29,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "--photocatalog-cli":
     except Exception:
         pass
 
-    _known = {"build-catalog", "find-duplicates", "serve-duplicates"}
+    _known = {"build-catalog", "find-duplicates", "serve-duplicates", "compute-hashes"}
     _rest = sys.argv[2:]
     # Strip any bootloader-injected flags before the actual subcommand
     while _rest and _rest[0].startswith("-") and _rest[0] not in _known:
@@ -42,6 +42,8 @@ if len(sys.argv) > 1 and sys.argv[1] == "--photocatalog-cli":
         from PhotoCatalog.find_duplicates import main
     elif subcmd == "serve-duplicates":
         from PhotoCatalog.serve_duplicates import main
+    elif subcmd == "compute-hashes":
+        from PhotoCatalog.enrich import main
     else:
         print(f"Unknown sub-command: {subcmd!r}  (sys.argv was: {sys.argv!r})", file=sys.stderr)
         sys.exit(1)
@@ -160,15 +162,43 @@ class PhotoCatalogApp(tk.Tk):
         self._build_browse_tab()
         self._build_about_tab()
 
-    # ── Build Catalog tab ─────────────────────────────────────────────────────
+    # ── Add to Catalog tab ────────────────────────────────────────────────────
 
     def _build_ingest_tab(self):
         tab = ttk.Frame(self._nb, padding=10)
-        self._nb.add(tab, text="  Build Catalog  ")
+        self._nb.add(tab, text="  Add to Catalog  ")
         tab.columnconfigure(0, weight=1)
 
+        # ── action bar (buttons at top) ──────────────────────────────────────
+        action_bar = ttk.Frame(tab)
+        action_bar.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        action_bar.columnconfigure(0, weight=1)
+
+        left = ttk.Frame(action_bar)
+        left.grid(row=0, column=0, sticky="w")
+        self._fresh = tk.BooleanVar()
+        ttk.Checkbutton(left, text="Fresh start", variable=self._fresh).pack(
+            side="left", padx=(0, 8)
+        )
+        self._gen_hashes = tk.BooleanVar()
+        ttk.Checkbutton(left, text="Generate hashes", variable=self._gen_hashes).pack(
+            side="left", padx=(0, 10)
+        )
+        ttk.Button(left, text="▶  Add to Catalog", command=self._run_ingest).pack(side="left")
+
+        right = ttk.Frame(action_bar)
+        right.grid(row=0, column=1, sticky="e")
+        self._hash_fresh = tk.BooleanVar()
+        ttk.Checkbutton(right, text="Fresh start", variable=self._hash_fresh).pack(
+            side="left", padx=(0, 8)
+        )
+        ttk.Button(right, text="▶  Compute Hashes", command=self._run_compute_hashes).pack(
+            side="left"
+        )
+
+        # ── source type ──────────────────────────────────────────────────────
         sf = ttk.LabelFrame(tab, text="Source type", padding=6)
-        sf.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        sf.grid(row=1, column=0, sticky="ew", pady=(0, 6))
         self._source = tk.StringVar(value="MacPhotos")
         for val in ("MacPhotos", "Lightroom", "Folder"):
             ttk.Radiobutton(
@@ -176,8 +206,9 @@ class PhotoCatalogApp(tk.Tk):
                 command=self._refresh_ingest,
             ).pack(side="left", padx=16)
 
+        # ── source path ──────────────────────────────────────────────────────
         self._pf = ttk.LabelFrame(tab, text="Source path", padding=6)
-        self._pf.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        self._pf.grid(row=2, column=0, sticky="ew", pady=(0, 6))
         self._pf.columnconfigure(0, weight=1)
         self._src_hint = ttk.Label(
             self._pf, foreground="gray",
@@ -190,27 +221,7 @@ class PhotoCatalogApp(tk.Tk):
         )
         ttk.Button(self._pf, text="Browse…", command=self._browse_src).grid(row=1, column=1)
 
-        of = ttk.LabelFrame(tab, text="Options", padding=6)
-        of.grid(row=2, column=0, sticky="ew", pady=(0, 6))
-        of.columnconfigure(1, weight=1)
-        self._fresh = tk.BooleanVar()
-        ttk.Checkbutton(
-            of,
-            text="Fresh start — drop and recreate the database before ingesting",
-            variable=self._fresh,
-        ).grid(row=0, column=0, columnspan=3, sticky="w")
-
-        ttk.Label(of, text="Hash threads:").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        workers_row = ttk.Frame(of)
-        workers_row.grid(row=1, column=1, columnspan=2, sticky="w", pady=(6, 0))
-        self._workers = tk.StringVar(value="0")
-        ttk.Spinbox(workers_row, textvariable=self._workers, from_=0, to=32, width=4).pack(
-            side="left"
-        )
-        ttk.Label(
-            workers_row, text="  (0 = auto, uses all available cores)", foreground="gray"
-        ).pack(side="left")
-
+        # ── iCloud options ───────────────────────────────────────────────────
         self._ic_f = ttk.LabelFrame(tab, text="iCloud options (MacPhotos only)", padding=6)
         self._ic_f.grid(row=3, column=0, sticky="ew", pady=(0, 6))
         self._ic_f.columnconfigure(1, weight=1)
@@ -242,10 +253,6 @@ class PhotoCatalogApp(tk.Tk):
             side="left"
         )
 
-        ttk.Button(tab, text="▶  Build Catalog", command=self._run_ingest).grid(
-            row=4, column=0, pady=10
-        )
-
     def _refresh_ingest(self):
         st = self._source.get()
         if st == "MacPhotos":
@@ -269,13 +276,20 @@ class PhotoCatalogApp(tk.Tk):
                 title="Select Lightroom catalog (.lrcat)",
                 filetypes=[("Lightroom catalog", "*.lrcat"), ("All", "*.*")],
             )
+        elif st == "MacPhotos":
+            # Use AppleScript so that .photoslibrary bundles appear as selectable
+            # items — tkinter's askdirectory descends into them instead of selecting them.
+            try:
+                result = subprocess.run(
+                    ["osascript", "-e",
+                     'POSIX path of (choose folder with prompt "Select Photos Library (.photoslibrary)")'],
+                    capture_output=True, text=True,
+                )
+                p = result.stdout.strip() if result.returncode == 0 else ""
+            except Exception:
+                p = filedialog.askdirectory(title="Select Photos library (.photoslibrary)")
         else:
-            title = (
-                "Select Photos library (.photoslibrary)"
-                if st == "MacPhotos"
-                else "Select folder to scan"
-            )
-            p = filedialog.askdirectory(title=title)
+            p = filedialog.askdirectory(title="Select folder to scan")
         if p:
             self._src_path.set(p)
 
@@ -306,6 +320,8 @@ class PhotoCatalogApp(tk.Tk):
             cmd += ["--path", src]
         if self._fresh.get():
             cmd.append("--fresh")
+        if not self._gen_hashes.get():
+            cmd.append("--no-hash")
         if self._download.get():
             cmd.append("--download")
         dl = self._dl_dir.get().strip()
@@ -314,10 +330,21 @@ class PhotoCatalogApp(tk.Tk):
         lim = self._dl_limit.get().strip()
         if lim:
             cmd += ["--download-limit", lim]
-        w = self._workers.get().strip()
-        if w and w != "0":
-            cmd += ["--workers", w]
 
+        self._run_cmd(cmd, caffeinate=True)
+
+    def _run_compute_hashes(self):
+        db = self.db_path.get().strip()
+        if not db:
+            messagebox.showerror("Error", "Catalog database path is required.")
+            return
+        prefix = _python_cmd()
+        if getattr(sys, "frozen", False):
+            cmd = prefix + ["compute-hashes", "--db", db]
+        else:
+            cmd = prefix + ["PhotoCatalog.enrich", "--db", db]
+        if self._hash_fresh.get():
+            cmd.append("--reset")
         self._run_cmd(cmd, caffeinate=True)
 
     # ── Find Duplicates tab ───────────────────────────────────────────────────

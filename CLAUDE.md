@@ -58,7 +58,7 @@ Two tables, one view:
 - **exifread not exiftool**: folder ingestion uses pure-Python `exifread`; no external binary dependency
 - **original_filename vs file_name**: MacPhotos renames files to UUIDs on disk; `file_name` is the UUID, `original_filename` is what was imported. Both are checked in filename duplicate strategy
 - **Rotation-aware metadata matching**: uses MIN/MAX of width/height so portrait and landscape versions match
-- **phash(hash_size=16)**: 256-bit hash (64 hex chars), Hamming distance ≤ 10 = likely duplicate
+- **phash(hash_size=16)**: 256-bit hash (64 hex chars). Currently matching is **exact only** — two photos must produce an identical hash string. Hamming distance is NOT used anywhere in the pipeline today.
 - **Hashing runs automatically at ingest**: `build_catalog.py` always calls `add_perceptual_hashes()` after ingestion; only files accessible on disk at that moment are hashed
 - **Lightroom file_size**: `AgLibraryFileAssetMetadata` and `AgLibraryFileDigest` are empty in this catalog; sizes come from `AgParsedImportHash` (via `id_global`, ~37% coverage) then fall back to `os.stat()` for locally accessible files
 - **insert_photos uses union of all row keys**: handles heterogeneous batches correctly
@@ -134,7 +134,8 @@ Signal filter badges in the left pane narrow the group list in real time:
 
 ## Next steps (in order)
 1. **Resolve duplicates** — safe strategy to mark which copy to keep (prefer MacPhotos > Lightroom > Folder, tiebreak by file size), move or record discards
-2. **Multi-machine export** — portable DB or sync mechanism so the catalog can be used on different personal machines
+2. **Fuzzy phash matching (Hamming distance)** — add a second hash column (`perceptual_hash_small`, `hash_size=8`, 64-bit / 16 hex chars) alongside the existing `hash_size=16` one. At ingest, compute both. In `find_unified`, add a fourth union-find signal: pairs where `hamming(hash_small_a, hash_small_b) ≤ 10`. This catches near-duplicates (light edits, JPEG re-compression, slight crops) that the current exact-match misses, without replacing the high-precision 256-bit hash. `hash_size=8` is the `imagehash` library's default and sweet spot for fuzzy matching.
+3. **Multi-machine export** — portable DB or sync mechanism so the catalog can be used on different personal machines
 
 ## Catalog location
 Catalogs are stored in `/Users/andrea/Pictures/PhotoCatalogs/`.

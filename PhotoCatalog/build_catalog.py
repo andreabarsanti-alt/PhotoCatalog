@@ -56,6 +56,10 @@ def main() -> None:
         "--workers", type=int, default=0,
         help="Parallel threads for perceptual hashing (0 = auto, default: min(cpu_count, 8))."
     )
+    parser.add_argument(
+        "--no-hash", action="store_true",
+        help="Skip perceptual hashing after ingestion."
+    )
     args = parser.parse_args()
 
     if args.download and args.source != "MacPhotos":
@@ -87,13 +91,13 @@ def main() -> None:
         print(f"Inserted : {inserted}")
         print(f"Skipped  : {skipped} (already in catalog)")
 
-        # Always hash newly accessible files after ingestion
-        print()
-        from .enrich import add_perceptual_hashes
-        hashed, failed = add_perceptual_hashes(conn, workers=args.workers)
-        print(f"Hashed   : {hashed}")
-        if failed:
-            print(f"Failed   : {failed} (unreadable files)")
+        if not args.no_hash:
+            print()
+            from .enrich import add_perceptual_hashes
+            hashed, failed = add_perceptual_hashes(conn, workers=args.workers)
+            print(f"Hashed   : {hashed}")
+            if failed:
+                print(f"Failed   : {failed} (unreadable files)")
 
         if args.download:
             print()

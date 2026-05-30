@@ -181,3 +181,37 @@ def download_cloud_photos(
             failed += 1
 
     return downloaded, failed
+
+
+def main() -> None:
+    import argparse
+    from .db import connect
+
+    parser = argparse.ArgumentParser(description="Compute perceptual hashes for a catalog.")
+    parser.add_argument("--db", required=True, help="Path to the SQLite catalog database file.")
+    parser.add_argument(
+        "--workers", type=int, default=0,
+        help="Hash threads (0 = auto, default: min(cpu_count, 8))."
+    )
+    parser.add_argument(
+        "--reset", action="store_true",
+        help="Clear all existing perceptual hashes and recompute from scratch."
+    )
+    args = parser.parse_args()
+
+    conn = connect(args.db)
+    try:
+        if args.reset:
+            conn.execute("UPDATE photos SET perceptual_hash = NULL")
+            conn.commit()
+            print("Reset: cleared all existing perceptual hashes.")
+        hashed, failed = add_perceptual_hashes(conn, workers=args.workers)
+        print(f"Hashed : {hashed}")
+        if failed:
+            print(f"Failed : {failed} (unreadable files)")
+    finally:
+        conn.close()
+
+
+if __name__ == "__main__":
+    main()

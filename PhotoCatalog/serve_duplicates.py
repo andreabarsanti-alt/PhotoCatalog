@@ -244,11 +244,16 @@ def _group_filter(allowed: list[dict] | None) -> set[tuple] | None:
     return {(g["strategy"], g["group_id"]) for g in allowed}
 
 
-def _apply_prefer(pattern: str, field: str, allowed: set | None = None) -> dict:
-    """For each group, discard undecided photos where `field` doesn't match pattern.
+def _apply_prefer(pattern: str, field: str, allowed: set | None = None,
+                  negate: bool = False) -> dict:
+    """For each group, discard undecided photos based on whether `field` matches pattern.
+
+    negate=False (default): discard photos that do NOT match — "prefer matching"
+    negate=True:            discard photos that DO match    — "avoid matching"
 
     field: 'filename' checks original_filename / file_name
             'path'     checks source_file
+            'type'     checks file_type
     """
     import re
     from collections import defaultdict
@@ -288,7 +293,10 @@ def _apply_prefer(pattern: str, field: str, allowed: set | None = None) -> dict:
             (matching if rx.search(target) else non_matching).append(p)
         if not matching or not non_matching:
             continue
-        for p in non_matching:
+        # negate=False → discard non-matching (prefer matching)
+        # negate=True  → discard matching     (avoid matching)
+        to_discard = matching if negate else non_matching
+        for p in to_discard:
             db.execute("""
                 INSERT INTO decisions (photo_id, action) VALUES (?, 'discard')
                 ON CONFLICT (photo_id) DO UPDATE
@@ -301,16 +309,16 @@ def _apply_prefer(pattern: str, field: str, allowed: set | None = None) -> dict:
     return {"ok": True, "discarded": discarded}
 
 
-def _apply_prefer_filename(pattern: str, allowed: set | None = None) -> dict:
-    return _apply_prefer(pattern, "filename", allowed)
+def _apply_prefer_filename(pattern: str, allowed: set | None = None, negate: bool = False) -> dict:
+    return _apply_prefer(pattern, "filename", allowed, negate=negate)
 
 
-def _apply_prefer_path(pattern: str, allowed: set | None = None) -> dict:
-    return _apply_prefer(pattern, "path", allowed)
+def _apply_prefer_path(pattern: str, allowed: set | None = None, negate: bool = False) -> dict:
+    return _apply_prefer(pattern, "path", allowed, negate=negate)
 
 
-def _apply_prefer_type(pattern: str, allowed: set | None = None) -> dict:
-    return _apply_prefer(pattern, "type", allowed)
+def _apply_prefer_type(pattern: str, allowed: set | None = None, negate: bool = False) -> dict:
+    return _apply_prefer(pattern, "type", allowed, negate=negate)
 
 
 def _keep_best(metric: str, allowed: set | None = None) -> dict:
@@ -541,14 +549,15 @@ class _Handler(BaseHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(length))
                 action = payload.get("action")
                 allowed = _group_filter(payload.get("groups"))
+                negate  = bool(payload.get("negate", False))
                 if action == "prefer_filename":
-                    result = _apply_prefer_filename(payload.get("pattern", ""), allowed)
+                    result = _apply_prefer_filename(payload.get("pattern", ""), allowed, negate=negate)
                     self._send(200, json.dumps(result).encode(), "application/json")
                 elif action == "prefer_path":
-                    result = _apply_prefer_path(payload.get("pattern", ""), allowed)
+                    result = _apply_prefer_path(payload.get("pattern", ""), allowed, negate=negate)
                     self._send(200, json.dumps(result).encode(), "application/json")
                 elif action == "prefer_type":
-                    result = _apply_prefer_type(payload.get("pattern", ""), allowed)
+                    result = _apply_prefer_type(payload.get("pattern", ""), allowed, negate=negate)
                     self._send(200, json.dumps(result).encode(), "application/json")
                 elif action == "prefer_resolution":
                     result = _keep_best("resolution", allowed)
@@ -730,6 +739,9 @@ video.photo-thumb { background: #000; }
            style="padding:4px 8px;border-radius:6px;border:1px solid #555;background:#2c2c2e;
                   color:#fff;font-size:12px;width:220px;outline:none"
            onkeydown="if(event.key==='Enter')applyPrefer();if(event.key==='Escape')togglePrefer(null)">
+    <button id="prefer-not-btn" class="action-btn" onclick="toggleNegate()"
+            title="NOT: discard files that match instead of files that don't"
+            style="font-family:monospace;letter-spacing:0.5px">NOT</button>
     <button class="action-btn" onclick="applyPrefer()">Apply</button>
     <button class="action-btn" onclick="togglePrefer(null)"
             style="border-color:#555;color:#8e8e93">Cancel</button>
@@ -1058,19 +1070,41 @@ function instantAction(action) {
 
 function keepUnique() { instantAction('keep_unique'); }
 
-let _preferField = null;
+let _preferField  = null;
+let _preferNegate = false;
+
+function _updatePreferLabel() {
+  const baseLabels = {
+    filename: 'filename',
+    path:     'full path',
+    type:     'file type (e.g. DNG, JPEG)',
+  };
+  const base = baseLabels[_preferField] || '';
+  const verb = _preferNegate ? 'Discard matching' : 'Keep matching';
+  document.getElementById('prefer-label').textContent = verb + ' ' + base + ':';
+  const btn = document.getElementById('prefer-not-btn');
+  btn.style.background    = _preferNegate ? '#ff453a' : '';
+  btn.style.borderColor   = _preferNegate ? '#ff453a' : '';
+  btn.style.color         = _preferNegate ? '#fff'    : '';
+}
+
+function toggleNegate() {
+  _preferNegate = !_preferNegate;
+  _updatePreferLabel();
+}
 
 function togglePrefer(field) {
   const row = document.getElementById('prefer-row');
-  if (!field || _preferField === field && row.style.display !== 'none') {
+  if (!field || (_preferField === field && row.style.display !== 'none')) {
     row.style.display = 'none';
-    _preferField = null;
+    _preferField  = null;
+    _preferNegate = false;
     return;
   }
-  _preferField = field;
-  const labels = {filename: 'Match against filename:', path: 'Match against full path:', type: 'Match against file type (e.g. DNG, JPEG):'};
-  document.getElementById('prefer-label').textContent = labels[field] || '';
+  _preferField  = field;
+  _preferNegate = false;
   document.getElementById('prefer-input').value = '';
+  _updatePreferLabel();
   row.style.display = 'flex';
   document.getElementById('prefer-input').focus();
 }
@@ -1083,7 +1117,7 @@ function applyPrefer() {
   fetch('/api/auto-select', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({action, pattern, groups: visibleGroups()})
+    body: JSON.stringify({action, pattern, negate: _preferNegate, groups: visibleGroups()})
   })
   .then(r => r.json())
   .then(data => {
