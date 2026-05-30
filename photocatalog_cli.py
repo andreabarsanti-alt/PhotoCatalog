@@ -11,20 +11,39 @@ Usage:
     PhotoCatalogCLI build-catalog [args...]
     PhotoCatalogCLI find-duplicates [args...]
     PhotoCatalogCLI serve-duplicates [args...]
+    PhotoCatalogCLI compute-hashes [args...]
 """
+import multiprocessing
 import sys
 
-_KNOWN = {"build-catalog", "find-duplicates", "serve-duplicates"}
+# Required for frozen (PyInstaller) binaries: lets Python's multiprocessing
+# recognise when this binary is being re-spawned as a worker subprocess and
+# handle it correctly instead of running main code again.
+multiprocessing.freeze_support()
 
-# Strip any leading Python-interpreter flags that the bootloader may inject
-# (e.g. -B / --pythonfaulthandler) before looking for the subcommand.
+# Python's multiprocessing resource tracker spawns:
+#   <this binary> -c "from multiprocessing.resource_tracker import main;main(FD)"
+# Detect and delegate to Python exec so it works correctly inside the frozen binary.
+if len(sys.argv) >= 3 and sys.argv[1] == "-c":
+    exec(sys.argv[2])  # noqa: S102
+    sys.exit(0)
+
+_KNOWN = {"build-catalog", "find-duplicates", "serve-duplicates", "compute-hashes"}
+
+# The PyInstaller bootloader may inject flags like -B before the subcommand.
+# Only strip flags that are NOT known subcommands.
 _args = sys.argv[1:]
 while _args and _args[0].startswith("-") and _args[0] not in _KNOWN:
     _args = _args[1:]
 
-if not _args:
-    print("Usage: PhotoCatalogCLI <subcmd> [args...]", file=sys.stderr)
-    print(f"  (received sys.argv: {sys.argv!r})", file=sys.stderr)
+if not _args or _args[0] not in _KNOWN:
+    known = ", ".join(sorted(_KNOWN))
+    print(f"Usage: PhotoCatalogCLI <subcmd> [args...]", file=sys.stderr)
+    print(f"  Known subcommands: {known}", file=sys.stderr)
+    if _args:
+        print(f"  Unknown sub-command: {_args[0]!r}", file=sys.stderr)
+    else:
+        print(f"  (received sys.argv: {sys.argv!r})", file=sys.stderr)
     sys.exit(1)
 
 subcmd = _args[0]
@@ -36,9 +55,7 @@ elif subcmd == "find-duplicates":
     from PhotoCatalog.find_duplicates import main
 elif subcmd == "serve-duplicates":
     from PhotoCatalog.serve_duplicates import main
-else:
-    print(f"Unknown sub-command: {subcmd!r}", file=sys.stderr)
-    print(f"  (full sys.argv was: {sys.argv!r})", file=sys.stderr)
-    sys.exit(1)
+elif subcmd == "compute-hashes":
+    from PhotoCatalog.enrich import main
 
 main()

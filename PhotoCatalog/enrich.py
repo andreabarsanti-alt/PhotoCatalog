@@ -17,7 +17,7 @@ _COMMIT_BATCH = 200  # commit to DB after this many successful hashes
 def _pending_rows(conn: sqlite3.Connection, where_col: str) -> list:
     """Return accessible image rows where `where_col` IS NULL."""
     rows = conn.execute("""
-        SELECT id, source_file, file_type
+        SELECT id, source_file
         FROM   photos
         WHERE  {col} IS NULL
           AND  source_file NOT LIKE 'macphotos://%'
