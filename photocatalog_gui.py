@@ -455,6 +455,24 @@ class PhotoCatalogApp(tk.Tk):
 
     # ── Clean Catalog ─────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _hs(n: int) -> str:
+        if n < 1024:            return f"{n} B"
+        if n < 1_048_576:       return f"{n/1024:.0f} KB"
+        if n < 1_073_741_824:   return f"{n/1_048_576:.1f} MB"
+        return f"{n/1_073_741_824:.2f} GB"
+
+    @staticmethod
+    def _db_delete(conn: sqlite3.Connection, ids: list[int]) -> None:
+        """Delete photos from decisions, duplicate_groups, and photos tables."""
+        for i in range(0, len(ids), 500):
+            batch = ids[i : i + 500]
+            ph = ",".join("?" * len(batch))
+            conn.execute(f"DELETE FROM decisions        WHERE photo_id IN ({ph})", batch)
+            conn.execute(f"DELETE FROM duplicate_groups WHERE photo_id IN ({ph})", batch)
+            conn.execute(f"DELETE FROM photos           WHERE id       IN ({ph})", batch)
+        conn.commit()
+
     def _show_clean_dialog(self):
         db_path = self.db_path.get().strip()
         if not db_path:
@@ -467,12 +485,13 @@ class PhotoCatalogApp(tk.Tk):
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         rows = conn.execute("""
-            SELECT p.id, p.source_file, p.original_filename, p.file_name,
+            SELECT p.id, p.source_file, p.source_type, p.source_catalog,
+                   p.original_filename, p.file_name, p.mp_uuid,
                    p.date_original, p.file_size
             FROM   photos p
             JOIN   decisions d ON d.photo_id = p.id
             WHERE  d.action = 'discard'
-            ORDER  BY p.date_original
+            ORDER  BY p.source_type, p.date_original
         """).fetchall()
         conn.close()
 
@@ -480,99 +499,120 @@ class PhotoCatalogApp(tk.Tk):
             messagebox.showinfo("Clean Catalog", "No photos are marked as Discard.")
             return
 
-        cloud   = [r for r in rows if (r["source_file"] or "").startswith("macphotos://")]
-        movable = [r for r in rows if not (r["source_file"] or "").startswith("macphotos://")]
-        with_date = [r for r in movable if r["date_original"]]
-        no_date   = [r for r in movable if not r["date_original"]]
-        total_bytes = sum(r["file_size"] or 0 for r in movable)
-
-        def _hs(n: int) -> str:
-            if n < 1024:       return f"{n} B"
-            if n < 1_048_576:  return f"{n/1024:.0f} KB"
-            if n < 1_073_741_824: return f"{n/1_048_576:.1f} MB"
-            return f"{n/1_073_741_824:.2f} GB"
+        folder_rows = [r for r in rows if r["source_type"] == "Folder"]
+        mac_rows    = [r for r in rows if r["source_type"] == "MacPhotos"]
+        lr_rows     = [r for r in rows if r["source_type"] == "Lightroom"]
 
         dlg = tk.Toplevel(self)
         dlg.title("Clean Catalog")
-        dlg.geometry("620x500")
+        dlg.geometry("640x560")
         dlg.resizable(True, True)
         dlg.transient(self)
         dlg.grab_set()
         dlg.columnconfigure(0, weight=1)
 
-        pad = {"padx": 14, "pady": 5}
+        pad = {"padx": 14, "pady": 6}
+        row_idx = 0
 
-        # ── Summary ──────────────────────────────────────────────────────────
-        sf = ttk.LabelFrame(dlg, text="What will happen", padding=10)
-        sf.grid(row=0, column=0, sticky="ew", **pad)
-        ttk.Label(sf, text=f"{len(movable)} photos will be moved  ({_hs(total_bytes)} freed)").pack(anchor="w")
-        ttk.Label(sf, text=f"  •  {len(with_date)} with date   →   destination/YYYY/MM/DD/").pack(anchor="w")
-        ttk.Label(sf, text=f"  •  {len(no_date)} without date  →   destination/NoDate/").pack(anchor="w")
-        if cloud:
-            ttk.Label(
-                sf,
-                text=f"  •  {len(cloud)} iCloud-only (macphotos://) — skipped, cannot move",
-                foreground="#ff9500",
-            ).pack(anchor="w")
-        ttk.Label(
-            sf,
-            text="All moved photos will be removed from the catalog.",
-            foreground="#ff9500",
-        ).pack(anchor="w", pady=(6, 0))
+        # ── Section 1: Folders ────────────────────────────────────────────────
+        if folder_rows:
+            with_date  = [r for r in folder_rows if r["date_original"]]
+            no_date    = [r for r in folder_rows if not r["date_original"]]
+            total_b    = sum(r["file_size"] or 0 for r in folder_rows)
 
-        # ── Destination ───────────────────────────────────────────────────────
-        df = ttk.LabelFrame(dlg, text="Move to folder", padding=10)
-        df.grid(row=1, column=0, sticky="ew", **pad)
-        df.columnconfigure(0, weight=1)
-        dest_var = tk.StringVar()
-        ttk.Entry(df, textvariable=dest_var).grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        ttk.Button(
-            df, text="Browse…",
-            command=lambda: dest_var.set(
-                filedialog.askdirectory(title="Move discarded photos to…", parent=dlg) or dest_var.get()
-            ),
-        ).grid(row=0, column=1)
+            ff = ttk.LabelFrame(dlg, text=f"Folders  —  {len(folder_rows)} photos  ({self._hs(total_b)})", padding=10)
+            ff.grid(row=row_idx, column=0, sticky="ew", **pad)
+            ff.columnconfigure(0, weight=1)
+            row_idx += 1
 
-        # ── Preview ───────────────────────────────────────────────────────────
-        n_preview = min(10, len(movable))
-        pf = ttk.LabelFrame(dlg, text=f"Preview  (first {n_preview} of {len(movable)})", padding=6)
-        pf.grid(row=2, column=0, sticky="nsew", padx=14, pady=5)
-        dlg.rowconfigure(2, weight=1)
-        ptext = scrolledtext.ScrolledText(
-            pf, height=8, font=("Menlo", 10), state="normal",
-            bg="#1c1c1e", fg="#e5e5ea", wrap="none",
+            ttk.Label(ff, text=f"  •  {len(with_date)} with date  →  destination/YYYY/MM/DD/").grid(row=0, column=0, columnspan=2, sticky="w")
+            ttk.Label(ff, text=f"  •  {len(no_date)} without date  →  destination/NoDate/").grid(row=1, column=0, columnspan=2, sticky="w")
+
+            dest_var = tk.StringVar()
+            ttk.Entry(ff, textvariable=dest_var).grid(row=2, column=0, sticky="ew", padx=(0, 6), pady=(6, 0))
+            ttk.Button(
+                ff, text="Browse…",
+                command=lambda: dest_var.set(
+                    filedialog.askdirectory(title="Move discarded Folder photos to…", parent=dlg) or dest_var.get()
+                ),
+            ).grid(row=2, column=1, pady=(6, 0))
+
+            ttk.Button(
+                ff, text=f"Move {len(folder_rows)} files  →",
+                command=lambda rows=folder_rows, dv=dest_var: self._execute_clean_folder(dlg, db_path, rows, dv),
+            ).grid(row=3, column=0, columnspan=2, sticky="e", pady=(8, 0))
+
+        # ── Section 2: MacPhotos ──────────────────────────────────────────────
+        if mac_rows:
+            local_mac = [r for r in mac_rows if not (r["source_file"] or "").startswith("macphotos://")]
+            cloud_mac = [r for r in mac_rows if     (r["source_file"] or "").startswith("macphotos://")]
+
+            mf = ttk.LabelFrame(dlg, text=f"MacPhotos  —  {len(mac_rows)} photos", padding=10)
+            mf.grid(row=row_idx, column=0, sticky="ew", **pad)
+            mf.columnconfigure(1, weight=1)
+            row_idx += 1
+
+            ttk.Label(mf, text="Add to Photos album:").grid(row=0, column=0, sticky="w")
+            mac_album_var = tk.StringVar(value="PhotoCatalog Discards")
+            ttk.Entry(mf, textvariable=mac_album_var).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+            detail = f"{len(local_mac)} local"
+            if cloud_mac:
+                detail += f"  +  {len(cloud_mac)} iCloud-only"
+            ttk.Label(mf, text=detail, foreground="gray").grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            ttk.Label(mf, text="⚠  Photos.app must be running.", foreground="#ff9500").grid(
+                row=2, column=0, columnspan=2, sticky="w", pady=(2, 0)
+            )
+            ttk.Button(
+                mf, text=f"Add {len(mac_rows)} to album  →",
+                command=lambda rows=mac_rows, av=mac_album_var: self._execute_clean_macphotos(dlg, db_path, rows, av),
+            ).grid(row=3, column=0, columnspan=2, sticky="e", pady=(8, 0))
+
+        # ── Section 3: Lightroom ──────────────────────────────────────────────
+        if lr_rows:
+            catalogs = {r["source_catalog"] for r in lr_rows if r["source_catalog"]}
+
+            lf = ttk.LabelFrame(dlg, text=f"Lightroom  —  {len(lr_rows)} photos  ({len(catalogs)} catalog{'s' if len(catalogs) != 1 else ''})", padding=10)
+            lf.grid(row=row_idx, column=0, sticky="ew", **pad)
+            lf.columnconfigure(1, weight=1)
+            row_idx += 1
+
+            lr_mode = tk.StringVar(value="collection")
+            ttk.Radiobutton(lf, text="Add to collection:", variable=lr_mode, value="collection").grid(row=0, column=0, sticky="w")
+            lr_collection_var = tk.StringVar(value="PhotoCatalog Discards")
+            ttk.Entry(lf, textvariable=lr_collection_var).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+            ttk.Radiobutton(lf, text="Add keyword:", variable=lr_mode, value="keyword").grid(row=1, column=0, sticky="w", pady=(4, 0))
+            lr_keyword_var = tk.StringVar(value="photocatalog-discard")
+            ttk.Entry(lf, textvariable=lr_keyword_var).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(4, 0))
+
+            ttk.Label(lf, text="⚠  Close Lightroom before applying.", foreground="#ff9500").grid(
+                row=2, column=0, columnspan=2, sticky="w", pady=(6, 0)
+            )
+            ttk.Button(
+                lf, text=f"Mark {len(lr_rows)} in Lightroom  →",
+                command=lambda rows=lr_rows, mv=lr_mode, cv=lr_collection_var, kv=lr_keyword_var:
+                    self._execute_clean_lightroom(dlg, db_path, rows, mv, cv, kv),
+            ).grid(row=3, column=0, columnspan=2, sticky="e", pady=(8, 0))
+
+        # ── Close button ──────────────────────────────────────────────────────
+        ttk.Button(dlg, text="Close", command=dlg.destroy).grid(
+            row=row_idx, column=0, sticky="e", padx=14, pady=(4, 12)
         )
-        ptext.pack(fill="both", expand=True)
-        for r in movable[:n_preview]:
-            name = r["original_filename"] or r["file_name"] or Path(r["source_file"]).name
-            date_str = (r["date_original"] or "")[:10] or "NoDate"
-            ptext.insert("end", f"{date_str}   {name}   ({_hs(r['file_size'] or 0)})\n")
-        if len(movable) > n_preview:
-            ptext.insert("end", f"  … and {len(movable) - n_preview} more\n")
-        ptext.config(state="disabled")
 
-        # ── Buttons ───────────────────────────────────────────────────────────
-        bf = ttk.Frame(dlg)
-        bf.grid(row=3, column=0, sticky="ew", padx=14, pady=(4, 12))
-        ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=(6, 0))
-        ttk.Button(
-            bf,
-            text=f"Move {len(movable)} photos  →",
-            command=lambda: self._execute_clean(dlg, db_path, movable, dest_var),
-        ).pack(side="right")
+    # ── Clean execution helpers ───────────────────────────────────────────────
 
-    def _execute_clean(self, dlg: tk.Toplevel, db_path: str,
-                       rows: list, dest_var: tk.StringVar):
+    def _execute_clean_folder(self, dlg: tk.Toplevel, db_path: str,
+                              rows: list, dest_var: tk.StringVar):
         dest = dest_var.get().strip()
         if not dest:
             messagebox.showerror("Error", "Please choose a destination folder.", parent=dlg)
             return
         dest_path = Path(dest)
         dlg.destroy()
-
         self._clear()
         self._status.config(text="Running…")
-        self._append(f"Moving {len(rows)} discarded photos to {dest}…\n\n")
+        self._append(f"Moving {len(rows)} Folder photos to {dest}…\n\n")
 
         def worker():
             conn = sqlite3.connect(db_path)
@@ -581,15 +621,12 @@ class PhotoCatalogApp(tk.Tk):
             ids_done: list[int] = []
 
             for r in rows:
-                src = Path(r["source_file"])
+                src  = Path(r["source_file"])
                 name = r["original_filename"] or r["file_name"] or src.name
-
                 if not src.exists():
                     self._output_q.put(f"  Not found on disk — removing from catalog: {name}\n")
                     ids_done.append(r["id"])
                     continue
-
-                # Date-based folder structure
                 date_str = (r["date_original"] or "")[:10]
                 if date_str and len(date_str) == 10:
                     y, m, d = date_str.split("-")
@@ -597,8 +634,6 @@ class PhotoCatalogApp(tk.Tk):
                 else:
                     folder = dest_path / "NoDate"
                 folder.mkdir(parents=True, exist_ok=True)
-
-                # Collision-safe destination filename
                 dst = folder / name
                 if dst.exists():
                     stem, suffix = Path(name).stem, Path(name).suffix
@@ -606,7 +641,6 @@ class PhotoCatalogApp(tk.Tk):
                     while dst.exists():
                         dst = folder / f"{stem}_{n}{suffix}"
                         n += 1
-
                 try:
                     shutil.move(str(src), str(dst))
                     ids_done.append(r["id"])
@@ -616,22 +650,130 @@ class PhotoCatalogApp(tk.Tk):
                     self._output_q.put(f"  Failed: {src.name} — {e}\n")
                     failed += 1
 
-            # Remove processed photos from DB in chunks (SQLite param limit = 999)
-            chunk = 500
-            for i in range(0, len(ids_done), chunk):
-                batch = ids_done[i : i + chunk]
-                ph = ",".join("?" * len(batch))
-                conn.execute(f"DELETE FROM decisions        WHERE photo_id IN ({ph})", batch)
-                conn.execute(f"DELETE FROM duplicate_groups WHERE photo_id IN ({ph})", batch)
-                conn.execute(f"DELETE FROM photos           WHERE id       IN ({ph})", batch)
-            conn.commit()
+            self._db_delete(conn, ids_done)
             conn.close()
-
             summary = f"\nDone — moved {moved}"
             if failed:
                 summary += f", failed {failed}"
-            summary += f".  {len(ids_done) - moved} catalog entries removed without a local file.\n"
-            self._output_q.put(summary)
+            if len(ids_done) > moved:
+                summary += f"  ({len(ids_done) - moved} already missing from disk, removed from catalog)"
+            self._output_q.put(summary + "\n")
+            self._output_q.put(None)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _execute_clean_macphotos(self, dlg: tk.Toplevel, db_path: str,
+                                 rows: list, album_var: tk.StringVar):
+        album_name = album_var.get().strip() or "PhotoCatalog Discards"
+        dlg.destroy()
+        self._clear()
+        self._status.config(text="Running…")
+        self._append(f"Adding {len(rows)} MacPhotos discards to album '{album_name}'…\n\n")
+
+        def worker():
+            try:
+                import photoscript
+            except ImportError:
+                self._output_q.put("  Error: photoscript not available (install via: pip install photoscript)\n")
+                self._output_q.put(None)
+                return
+
+            library = photoscript.PhotosLibrary()
+            if not library.running:
+                self._output_q.put("  Error: Photos.app is not running — please open it and try again.\n")
+                self._output_q.put(None)
+                return
+
+            # Find or create album
+            try:
+                album = library.album(album_name)
+            except Exception:
+                album = library.create_album(album_name)
+
+            added, failed_uuids = 0, 0
+            ids_done: list[int] = []
+
+            for r in rows:
+                uuid = r["mp_uuid"]
+                if not uuid:
+                    self._output_q.put(f"  No UUID — skipping: {r['original_filename'] or r['file_name']}\n")
+                    continue
+                try:
+                    photos = library.photos(uuid=[uuid])
+                    if photos:
+                        album.add(photos)
+                        ids_done.append(r["id"])
+                        added += 1
+                        self._output_q.put(f"  → album: {r['original_filename'] or r['file_name'] or uuid}\n")
+                    else:
+                        self._output_q.put(f"  Not found in Photos: {uuid}\n")
+                        failed_uuids += 1
+                except Exception as e:
+                    self._output_q.put(f"  Failed {uuid}: {e}\n")
+                    failed_uuids += 1
+
+            conn = sqlite3.connect(db_path)
+            self._db_delete(conn, ids_done)
+            conn.close()
+            self._output_q.put(f"\nDone — added {added} to '{album_name}'")
+            if failed_uuids:
+                self._output_q.put(f", {failed_uuids} not found in Photos")
+            self._output_q.put("\n")
+            self._output_q.put(None)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _execute_clean_lightroom(self, dlg: tk.Toplevel, db_path: str,
+                                 rows: list, mode_var: tk.StringVar,
+                                 collection_var: tk.StringVar, keyword_var: tk.StringVar):
+        mode = mode_var.get()
+        name = (collection_var if mode == "collection" else keyword_var).get().strip()
+        if not name:
+            messagebox.showerror("Error", "Please enter a collection or keyword name.", parent=dlg)
+            return
+        dlg.destroy()
+        self._clear()
+        self._status.config(text="Running…")
+        label = "collection" if mode == "collection" else "keyword"
+        self._append(f"Marking {len(rows)} Lightroom discards with {label} '{name}'…\n\n")
+
+        def worker():
+            from PhotoCatalog.sources.lightroom import add_to_collection, add_keyword
+            from collections import defaultdict
+
+            # Group by catalog path (there may be multiple .lrcat files)
+            by_cat: dict[str, list] = defaultdict(list)
+            for r in rows:
+                by_cat[r["source_catalog"] or ""].append(r)
+
+            total_added, total_skipped = 0, []
+            for lrcat_path, cat_rows in by_cat.items():
+                if not lrcat_path or not Path(lrcat_path).exists():
+                    self._output_q.put(f"  Catalog not found: {lrcat_path or '(unknown)'}\n")
+                    total_skipped.extend(r["source_file"] for r in cat_rows)
+                    continue
+                source_files = [r["source_file"] for r in cat_rows]
+                try:
+                    if mode == "collection":
+                        added, skipped = add_to_collection(lrcat_path, source_files, name)
+                    else:
+                        added, skipped = add_keyword(lrcat_path, source_files, name)
+                    self._output_q.put(f"  {Path(lrcat_path).name}: {added} marked, {len(skipped)} not found\n")
+                    total_added += added
+                    total_skipped.extend(skipped)
+                    # Remove successfully marked photos from catalog
+                    cat_ids = [r["id"] for r in cat_rows if r["source_file"] not in skipped]
+                    if cat_ids:
+                        conn = sqlite3.connect(db_path)
+                        self._db_delete(conn, cat_ids)
+                        conn.close()
+                except Exception as e:
+                    self._output_q.put(f"  Error writing {Path(lrcat_path).name}: {e}\n")
+
+            self._output_q.put(f"\nDone — {total_added} marked as {label} '{name}'")
+            if total_skipped:
+                self._output_q.put(f", {len(total_skipped)} not matched in catalog")
+            self._output_q.put("\n")
             self._output_q.put(None)
 
         threading.Thread(target=worker, daemon=True).start()

@@ -83,7 +83,13 @@ def _checkpoint_clear(conn: sqlite3.Connection) -> None:
 # Unified strategy (recommended)
 # ---------------------------------------------------------------------------
 
-_MIN_SCORE = 2  # internal threshold — groups with fewer matching signals are discarded
+_MIN_SCORE     = 2   # groups with score below this are discarded
+_FUZZY_HAMMING = 10  # Hamming distance threshold for perceptual_hash_small (64-bit hash)
+
+
+def _hamming(a: int, b: int) -> int:
+    return (a ^ b).bit_count()  # int.bit_count() available in Python 3.10+
+
 
 def find_unified(conn: sqlite3.Connection) -> tuple[int, int]:
     """
@@ -120,7 +126,8 @@ def find_unified(conn: sqlite3.Connection) -> tuple[int, int]:
     else:
         rows = conn.execute("""
             SELECT id, file_name, original_filename, date_original, file_type,
-                   file_size, image_width, image_height, perceptual_hash
+                   file_size, image_width, image_height, perceptual_hash,
+                   perceptual_hash_small
             FROM   photos
         """).fetchall()
 
@@ -185,6 +192,32 @@ def find_unified(conn: sqlite3.Connection) -> tuple[int, int]:
             ids = list(ids_set)
             if len(ids) >= 2:
                 union_list(ids)
+
+        # Signal 4 — fuzzy perceptual hash (Hamming distance ≤ _FUZZY_HAMMING on small hash)
+        # Band-based candidate generation: splits the 64-bit hash into 8 bands of 8 bits.
+        # Any pair with Hamming ≤ 10 shares at least one identical band with ~92% probability,
+        # so nearly all near-duplicates are found without an O(n²) full scan.
+        small_list = [(pid, p["perceptual_hash_small"])
+                      for pid, p in photos.items() if p["perceptual_hash_small"]]
+        if len(small_list) >= 2:
+            hash_ints: dict[int, int] = {pid: int(h, 16) for pid, h in small_list}
+            seen_fuzzy: set[tuple[int, int]] = set()
+            band_idx: list[dict] = [defaultdict(list) for _ in range(8)]
+            for pid, h in hash_ints.items():
+                for band in range(8):
+                    band_idx[band][(h >> (band * 8)) & 0xFF].append(pid)
+            for band in range(8):
+                for bucket in band_idx[band].values():
+                    if len(bucket) < 2:
+                        continue
+                    for i in range(len(bucket)):
+                        for j in range(i + 1, len(bucket)):
+                            a, b = bucket[i], bucket[j]
+                            key = (a, b) if a < b else (b, a)
+                            if key not in seen_fuzzy:
+                                seen_fuzzy.add(key)
+                                if _hamming(hash_ints[a], hash_ints[b]) <= _FUZZY_HAMMING:
+                                    union(a, b)
 
         print("  Grouping connected components…")
 
@@ -264,11 +297,25 @@ def _score_group(pids: list, photos: dict) -> tuple[int, dict]:
         common &= s
     name_ok = len(common) > 0
 
-    n_other = sum([dims_ok, date_ok, type_ok, size_ok, name_ok])
+    # fuzzy — at least one pair has small-hash Hamming distance ≤ threshold
+    small_hashes = [p["perceptual_hash_small"] for p in group if p["perceptual_hash_small"]]
+    fuzzy = False
+    if len(small_hashes) >= 2:
+        ints = [int(h, 16) for h in small_hashes]
+        for i in range(len(ints)):
+            for j in range(i + 1, len(ints)):
+                if _hamming(ints[i], ints[j]) <= _FUZZY_HAMMING:
+                    fuzzy = True
+                    break
+            if fuzzy:
+                break
+
+    n_other = sum([dims_ok, date_ok, type_ok, size_ok, name_ok, fuzzy])
     score   = (10 + n_other) if phash else n_other
 
     return score, {
         "phash": phash,
+        "fuzzy": fuzzy,
         "dims":  dims_ok,
         "date":  date_ok,
         "type":  type_ok,

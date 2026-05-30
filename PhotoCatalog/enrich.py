@@ -16,14 +16,15 @@ _COMMIT_BATCH = 200  # commit to DB after this many successful hashes
 
 def add_perceptual_hashes(conn: sqlite3.Connection, workers: int = 0) -> tuple[int, int]:
     """
-    Compute and store perceptual hashes for image photos where perceptual_hash is NULL.
+    Compute and store perceptual hashes for image photos where either hash column is NULL.
+
+    Two hashes are computed per image in a single decode pass:
+      perceptual_hash       — phash(hash_size=16), 64 hex chars — used for exact matching
+      perceptual_hash_small — phash(hash_size=8),  16 hex chars — used for fuzzy Hamming matching
 
     Movies are skipped — perceptual hashing does not apply to video files.
     Cloud-only photos (source_file starting with 'macphotos://') are also skipped
     since the file is not locally accessible.
-
-    Uses phash with hash_size=16 (256-bit hash, 64 hex chars).
-    Hamming distance <= 10 is a good "likely duplicate" threshold.
 
     Args:
         workers: Parallel threads for image decode + hash (0 = auto, capped at 8).
@@ -42,7 +43,7 @@ def add_perceptual_hashes(conn: sqlite3.Connection, workers: int = 0) -> tuple[i
     rows = conn.execute("""
         SELECT id, source_file, file_type
         FROM   photos
-        WHERE  perceptual_hash IS NULL
+        WHERE  (perceptual_hash IS NULL OR perceptual_hash_small IS NULL)
           AND  source_file NOT LIKE 'macphotos://%'
           AND  UPPER(COALESCE(file_type, '')) NOT IN ({})
     """.format(", ".join(f"'{t}'" for t in _MOVIE_TYPES))).fetchall()
@@ -57,13 +58,15 @@ def add_perceptual_hashes(conn: sqlite3.Connection, workers: int = 0) -> tuple[i
 
     n_workers = workers if workers > 0 else min(os.cpu_count() or 4, 8)
 
-    def _hash_one(args: tuple) -> tuple[int, str | None, str | None]:
+    def _hash_one(args: tuple) -> tuple[int, str | None, str | None, str | None]:
         row_id, path = args
         try:
             img = Image.open(path)
-            return row_id, str(imagehash.phash(img, hash_size=16)), None
+            h_large = str(imagehash.phash(img, hash_size=16))
+            h_small = str(imagehash.phash(img, hash_size=8))
+            return row_id, h_large, h_small, None
         except Exception as e:
-            return row_id, None, f"{type(e).__name__}: {e}"
+            return row_id, None, None, f"{type(e).__name__}: {e}"
 
     pending_commit = 0
 
@@ -72,11 +75,11 @@ def add_perceptual_hashes(conn: sqlite3.Connection, workers: int = 0) -> tuple[i
         futures_map = {pool.submit(_hash_one, item): item for item in pending}
         with tqdm(total=len(pending), desc=label, unit="img") as bar:
             for future in as_completed(futures_map):
-                row_id, h, err = future.result()
-                if h is not None:
+                row_id, h_large, h_small, err = future.result()
+                if h_large is not None:
                     conn.execute(
-                        "UPDATE photos SET perceptual_hash = ? WHERE id = ?",
-                        (h, row_id),
+                        "UPDATE photos SET perceptual_hash = ?, perceptual_hash_small = ? WHERE id = ?",
+                        (h_large, h_small, row_id),
                     )
                     hashed += 1
                     pending_commit += 1
@@ -202,7 +205,7 @@ def main() -> None:
     conn = connect(args.db)
     try:
         if args.reset:
-            conn.execute("UPDATE photos SET perceptual_hash = NULL")
+            conn.execute("UPDATE photos SET perceptual_hash = NULL, perceptual_hash_small = NULL")
             conn.commit()
             print("Reset: cleared all existing perceptual hashes.")
         hashed, failed = add_perceptual_hashes(conn, workers=args.workers)

@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS photos (
     longitude                REAL,
 
     -- Computed (populated by enrich.py)
-    perceptual_hash          TEXT,               -- phash(hash_size=16), 64 hex chars
+    perceptual_hash          TEXT,               -- phash(hash_size=16), 64 hex chars — exact matching
+    perceptual_hash_small    TEXT,               -- phash(hash_size=8),  16 hex chars — fuzzy Hamming matching
 
     -- Unified curation (populated from any source that has it)
     caption                  TEXT,
@@ -105,6 +106,9 @@ CREATE INDEX IF NOT EXISTS idx_photos_source_catalog
 CREATE INDEX IF NOT EXISTS idx_photos_perceptual_hash
     ON photos (perceptual_hash)
     WHERE perceptual_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_photos_perceptual_hash_small
+    ON photos (perceptual_hash_small)
+    WHERE perceptual_hash_small IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_photos_meta_signal
     ON photos (image_width, image_height, date_original, file_type)
     WHERE image_width IS NOT NULL AND image_height IS NOT NULL
@@ -174,6 +178,8 @@ def init_db(conn: sqlite3.Connection, drop_existing: bool = False) -> None:
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(photos)")}
     if "source_catalog" not in existing_cols:
         conn.execute("ALTER TABLE photos ADD COLUMN source_catalog TEXT")
+    if "perceptual_hash_small" not in existing_cols:
+        conn.execute("ALTER TABLE photos ADD COLUMN perceptual_hash_small TEXT")
     conn.commit()
 
 

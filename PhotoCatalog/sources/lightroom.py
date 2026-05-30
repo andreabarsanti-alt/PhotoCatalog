@@ -71,6 +71,143 @@ WHERE rf.absolutePath IS NOT NULL
 """
 
 
+def _lr_find_image_ids(lr_conn: sqlite3.Connection, source_files: list[str]) -> dict[str, int]:
+    """Return {source_file: id_local} for photos found in the Lightroom catalog."""
+    result = {}
+    for sf in source_files:
+        row = lr_conn.execute("""
+            SELECT i.id_local
+            FROM   Adobe_images i
+            JOIN   AgLibraryFile lf ON i.rootFile   = lf.id_local
+            JOIN   AgLibraryFolder f ON lf.folder    = f.id_local
+            JOIN   AgLibraryRootFolder rf ON f.rootFolder = rf.id_local
+            WHERE  rf.absolutePath || f.pathFromRoot || lf.baseName || '.' || lf.extension = ?
+        """, (sf,)).fetchone()
+        if row:
+            result[sf] = row["id_local"]
+    return result
+
+
+def add_to_collection(lrcat_path: str, source_files: list[str],
+                      collection_name: str) -> tuple[int, list[str]]:
+    """Add photos to a Lightroom collection, creating it if needed.
+
+    Returns (added_count, skipped_source_files).
+    Lightroom must be closed before calling this.
+    """
+    import uuid as _uuid
+    lr_conn = sqlite3.connect(str(lrcat_path))
+    lr_conn.row_factory = sqlite3.Row
+    try:
+        col = lr_conn.execute(
+            "SELECT id_local FROM AgLibraryCollection WHERE name = ? AND parent IS NULL",
+            (collection_name,),
+        ).fetchone()
+        if col is None:
+            col_global = _uuid.uuid4().hex
+            cur = lr_conn.execute(
+                """INSERT INTO AgLibraryCollection
+                       (creationId, genealogy, id_global, imageCount, name, parent, systemOnly)
+                   VALUES (?, '', ?, 0, ?, NULL, 0)""",
+                (f"photocatalog-{col_global[:8]}", col_global, collection_name),
+            )
+            col_id = cur.lastrowid
+            lr_conn.execute(
+                "UPDATE AgLibraryCollection SET genealogy = ? WHERE id_local = ?",
+                (f"/{col_id}/", col_id),
+            )
+        else:
+            col_id = col["id_local"]
+
+        img_ids = _lr_find_image_ids(lr_conn, source_files)
+        skipped = [sf for sf in source_files if sf not in img_ids]
+        added = 0
+        for sf, img_id in img_ids.items():
+            exists = lr_conn.execute(
+                "SELECT 1 FROM AgLibraryCollectionImage WHERE collection = ? AND image = ?",
+                (col_id, img_id),
+            ).fetchone()
+            if not exists:
+                max_pos = lr_conn.execute(
+                    "SELECT COALESCE(MAX(positionInCollection), 0) FROM AgLibraryCollectionImage WHERE collection = ?",
+                    (col_id,),
+                ).fetchone()[0]
+                lr_conn.execute(
+                    "INSERT INTO AgLibraryCollectionImage (collection, image, pick, positionInCollection) VALUES (?, ?, 0, ?)",
+                    (col_id, img_id, max_pos + 1),
+                )
+                added += 1
+        lr_conn.execute(
+            "UPDATE AgLibraryCollection SET imageCount = (SELECT COUNT(*) FROM AgLibraryCollectionImage WHERE collection = ?) WHERE id_local = ?",
+            (col_id, col_id),
+        )
+        lr_conn.commit()
+        return added, skipped
+    finally:
+        lr_conn.close()
+
+
+def add_keyword(lrcat_path: str, source_files: list[str],
+                keyword_name: str) -> tuple[int, list[str]]:
+    """Add a keyword tag to photos in a Lightroom catalog, creating the keyword if needed.
+
+    Returns (tagged_count, skipped_source_files).
+    Lightroom must be closed before calling this.
+    """
+    import uuid as _uuid
+    lr_conn = sqlite3.connect(str(lrcat_path))
+    lr_conn.row_factory = sqlite3.Row
+    try:
+        kw = lr_conn.execute(
+            "SELECT id_local FROM AgLibraryKeyword WHERE name = ? AND parent IS NULL",
+            (keyword_name,),
+        ).fetchone()
+        if kw is None:
+            kw_global = _uuid.uuid4().hex
+            lc = keyword_name.lower()
+            cur = lr_conn.execute(
+                """INSERT INTO AgLibraryKeyword
+                       (dateCreated, genealogy, id_global, includedInAutoSync,
+                        keyAssetFace, keyFace, keyImage, lastApplied,
+                        lc_name, name, parent, searchIndex, synonyms)
+                   VALUES (datetime('now'), '', ?, 0,
+                           NULL, NULL, NULL, NULL,
+                           ?, ?, NULL, ?, NULL)""",
+                (kw_global, lc, keyword_name, lc),
+            )
+            kw_id = cur.lastrowid
+            lr_conn.execute(
+                "UPDATE AgLibraryKeyword SET genealogy = ? WHERE id_local = ?",
+                (f"/{kw_id}/", kw_id),
+            )
+        else:
+            kw_id = kw["id_local"]
+
+        img_ids = _lr_find_image_ids(lr_conn, source_files)
+        skipped = [sf for sf in source_files if sf not in img_ids]
+        added = 0
+        for sf, img_id in img_ids.items():
+            exists = lr_conn.execute(
+                "SELECT 1 FROM AgLibraryKeywordImage WHERE image = ? AND tag = ?",
+                (img_id, kw_id),
+            ).fetchone()
+            if not exists:
+                lr_conn.execute(
+                    "INSERT INTO AgLibraryKeywordImage (image, tag) VALUES (?, ?)",
+                    (img_id, kw_id),
+                )
+                added += 1
+        if added:
+            lr_conn.execute(
+                "UPDATE AgLibraryKeyword SET imageCount = COALESCE(imageCount, 0) + ? WHERE id_local = ?",
+                (added, kw_id),
+            )
+        lr_conn.commit()
+        return added, skipped
+    finally:
+        lr_conn.close()
+
+
 def ingest(conn: sqlite3.Connection, lrcat_path: str) -> tuple[int, int]:
     """
     Ingest photos from a Lightroom Classic catalog.

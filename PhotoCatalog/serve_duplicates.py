@@ -75,7 +75,7 @@ def _all_groups() -> list[dict]:
             "discard_count": r["discard_count"],
             "label":        label or f"group {r['group_id']}",
             "score":        mi.get("score"),
-            "signals":      {k: mi[k] for k in ("phash","dims","date","type","size","name") if k in mi},
+            "signals":      {k: mi[k] for k in ("phash","fuzzy","dims","date","type","size","name") if k in mi},
             "has_video":    bool(r["has_video"]),
         })
     # unified groups arrive pre-sorted by score (group_id order = score order);
@@ -207,7 +207,7 @@ def _group_detail(strategy: str, group_id: int) -> dict:
             print(f"Warning: could not parse match_info: {e}", file=sys.stderr)
 
     # Separate the signals dict from the rest of match_info for the UI
-    signals = {k: raw_mi[k] for k in ("phash","dims","date","type","size","name") if k in raw_mi}
+    signals = {k: raw_mi[k] for k in ("phash","fuzzy","dims","date","type","size","name") if k in raw_mi}
     match_info = {k: v for k, v in raw_mi.items() if k not in signals}
     if signals:
         match_info["signals"] = signals
@@ -628,6 +628,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .sf:hover { border-color: #007aff; color: #007aff; }
 .sf.on    { background: #007aff; border-color: #007aff; color: #fff; }
 .sf.on.sf-phash  { background: #b45309; border-color: #b45309; }
+.sf.on.sf-fuzzy  { background: #7c3aed; border-color: #7c3aed; }
 .sf.on.sf-unique { background: #6e6e73; border-color: #6e6e73; }
 .sf.on.sf-video  { background: #6d28d9; border-color: #6d28d9; }
 
@@ -643,6 +644,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .sig-on  { background: #1a7f37; }
 .sig-off { background: #d1d1d6; }
 .sig-dot.sd-phash.sig-on { background: #b45309; }
+.sig-dot.sd-fuzzy.sig-on { background: #7c3aed; }
 
 .group-info { flex: 1; min-width: 0; }
 .group-info .name { font-size: 12px; color: #1c1c1e; white-space: nowrap;
@@ -667,6 +669,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 .sig-cell .sig-lbl { color: #6e6e73; margin-top: 2px; font-size: 10px; font-weight: 400; }
 .sig-cell.sig-yes  { border: 1.5px solid #1a7f37; color: #1a7f37; }
 .sig-cell.sig-yes.sig-phash { border-color: #b45309; color: #b45309; }
+.sig-cell.sig-yes.sig-fuzzy { border-color: #7c3aed; color: #7c3aed; }
 .sig-cell.sig-no   { border: 1.5px solid #d1d1d6; opacity: .45; }
 
 /* ── photo cards ── */
@@ -753,6 +756,7 @@ video.photo-thumb { background: #000; }
     <div id="filters">
       <div id="sig-filters">
         <span class="sf sf-phash" data-sig="phash">pHash</span>
+        <span class="sf sf-fuzzy" data-sig="fuzzy">Fuzzy</span>
         <span class="sf" data-sig="dims">Dims</span>
         <span class="sf" data-sig="date">Date</span>
         <span class="sf" data-sig="type">Type</span>
@@ -779,8 +783,8 @@ let currentDecisions = {};   // photo_id -> action, for photos in the active gro
 let showResolved   = false;  // when false, hide groups with ≤1 non-discarded photo
 let showOnlyVideo  = false;
 
-const SIGNALS   = ['phash','dims','date','type','size','name'];
-const SIG_LABEL = {phash:'pHash', dims:'Dims', date:'Date', type:'Type', size:'Size', name:'Name'};
+const SIGNALS   = ['phash','fuzzy','dims','date','type','size','name'];
+const SIG_LABEL = {phash:'pHash', fuzzy:'Fuzzy', dims:'Dims', date:'Date', type:'Type', size:'Size', name:'Name'};
 
 // ── load data ────────────────────────────────────────────────────────────────
 function refreshGroups() {
@@ -914,7 +918,8 @@ function renderDetail(strategy, group_id, data) {
 
   const sigGrid = SIGNALS.map(k => {
     const on = signals[k];
-    return `<div class="sig-cell ${on ? 'sig-yes' : 'sig-no'} ${k === 'phash' && on ? 'sig-phash' : ''}">
+    const accent = (k === 'phash' || k === 'fuzzy') && on ? `sig-${k}` : '';
+    return `<div class="sig-cell ${on ? 'sig-yes' : 'sig-no'} ${accent}">
               ${on ? '✓' : '✗'}
               <span class="sig-lbl">${SIG_LABEL[k]}</span>
             </div>`;
