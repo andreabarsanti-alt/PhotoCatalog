@@ -58,6 +58,7 @@ import json
 import os
 import queue
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -389,7 +390,7 @@ class PhotoCatalogApp(tk.Tk):
 
     def _build_browse_tab(self):
         tab = ttk.Frame(self._nb, padding=10)
-        self._nb.add(tab, text="  Browse Duplicates  ")
+        self._nb.add(tab, text="  Review Duplicates  ")
         tab.columnconfigure(0, weight=1)
 
         info = ttk.LabelFrame(tab, text="Web UI", padding=8)
@@ -424,6 +425,21 @@ class PhotoCatalogApp(tk.Tk):
             foreground="gray",
         ).grid(row=3, column=0, sticky="w", pady=(8, 0))
 
+        ttk.Separator(tab, orient="horizontal").grid(
+            row=4, column=0, sticky="ew", pady=(14, 10)
+        )
+
+        clean_row = ttk.Frame(tab)
+        clean_row.grid(row=5, column=0, sticky="w")
+        ttk.Button(
+            clean_row, text="🗑  Clean Catalog…", command=self._show_clean_dialog
+        ).pack(side="left")
+        ttk.Label(
+            clean_row,
+            text="  Move all Discarded photos to a folder and remove them from the catalog.",
+            foreground="gray",
+        ).pack(side="left")
+
     def _run_browse(self):
         db = self.db_path.get().strip()
         if not db:
@@ -436,6 +452,189 @@ class PhotoCatalogApp(tk.Tk):
         else:
             cmd = prefix + ["PhotoCatalog.serve_duplicates", "--db", db, "--port", port]
         self._run_cmd(cmd)
+
+    # ── Clean Catalog ─────────────────────────────────────────────────────────
+
+    def _show_clean_dialog(self):
+        db_path = self.db_path.get().strip()
+        if not db_path:
+            messagebox.showerror("Error", "Catalog database path is required.")
+            return
+        if not Path(db_path).exists():
+            messagebox.showerror("Error", f"Database not found:\n{db_path}")
+            return
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("""
+            SELECT p.id, p.source_file, p.original_filename, p.file_name,
+                   p.date_original, p.file_size
+            FROM   photos p
+            JOIN   decisions d ON d.photo_id = p.id
+            WHERE  d.action = 'discard'
+            ORDER  BY p.date_original
+        """).fetchall()
+        conn.close()
+
+        if not rows:
+            messagebox.showinfo("Clean Catalog", "No photos are marked as Discard.")
+            return
+
+        cloud   = [r for r in rows if (r["source_file"] or "").startswith("macphotos://")]
+        movable = [r for r in rows if not (r["source_file"] or "").startswith("macphotos://")]
+        with_date = [r for r in movable if r["date_original"]]
+        no_date   = [r for r in movable if not r["date_original"]]
+        total_bytes = sum(r["file_size"] or 0 for r in movable)
+
+        def _hs(n: int) -> str:
+            if n < 1024:       return f"{n} B"
+            if n < 1_048_576:  return f"{n/1024:.0f} KB"
+            if n < 1_073_741_824: return f"{n/1_048_576:.1f} MB"
+            return f"{n/1_073_741_824:.2f} GB"
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Clean Catalog")
+        dlg.geometry("620x500")
+        dlg.resizable(True, True)
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.columnconfigure(0, weight=1)
+
+        pad = {"padx": 14, "pady": 5}
+
+        # ── Summary ──────────────────────────────────────────────────────────
+        sf = ttk.LabelFrame(dlg, text="What will happen", padding=10)
+        sf.grid(row=0, column=0, sticky="ew", **pad)
+        ttk.Label(sf, text=f"{len(movable)} photos will be moved  ({_hs(total_bytes)} freed)").pack(anchor="w")
+        ttk.Label(sf, text=f"  •  {len(with_date)} with date   →   destination/YYYY/MM/DD/").pack(anchor="w")
+        ttk.Label(sf, text=f"  •  {len(no_date)} without date  →   destination/NoDate/").pack(anchor="w")
+        if cloud:
+            ttk.Label(
+                sf,
+                text=f"  •  {len(cloud)} iCloud-only (macphotos://) — skipped, cannot move",
+                foreground="#ff9500",
+            ).pack(anchor="w")
+        ttk.Label(
+            sf,
+            text="All moved photos will be removed from the catalog.",
+            foreground="#ff9500",
+        ).pack(anchor="w", pady=(6, 0))
+
+        # ── Destination ───────────────────────────────────────────────────────
+        df = ttk.LabelFrame(dlg, text="Move to folder", padding=10)
+        df.grid(row=1, column=0, sticky="ew", **pad)
+        df.columnconfigure(0, weight=1)
+        dest_var = tk.StringVar()
+        ttk.Entry(df, textvariable=dest_var).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(
+            df, text="Browse…",
+            command=lambda: dest_var.set(
+                filedialog.askdirectory(title="Move discarded photos to…", parent=dlg) or dest_var.get()
+            ),
+        ).grid(row=0, column=1)
+
+        # ── Preview ───────────────────────────────────────────────────────────
+        n_preview = min(10, len(movable))
+        pf = ttk.LabelFrame(dlg, text=f"Preview  (first {n_preview} of {len(movable)})", padding=6)
+        pf.grid(row=2, column=0, sticky="nsew", padx=14, pady=5)
+        dlg.rowconfigure(2, weight=1)
+        ptext = scrolledtext.ScrolledText(
+            pf, height=8, font=("Menlo", 10), state="normal",
+            bg="#1c1c1e", fg="#e5e5ea", wrap="none",
+        )
+        ptext.pack(fill="both", expand=True)
+        for r in movable[:n_preview]:
+            name = r["original_filename"] or r["file_name"] or Path(r["source_file"]).name
+            date_str = (r["date_original"] or "")[:10] or "NoDate"
+            ptext.insert("end", f"{date_str}   {name}   ({_hs(r['file_size'] or 0)})\n")
+        if len(movable) > n_preview:
+            ptext.insert("end", f"  … and {len(movable) - n_preview} more\n")
+        ptext.config(state="disabled")
+
+        # ── Buttons ───────────────────────────────────────────────────────────
+        bf = ttk.Frame(dlg)
+        bf.grid(row=3, column=0, sticky="ew", padx=14, pady=(4, 12))
+        ttk.Button(bf, text="Cancel", command=dlg.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(
+            bf,
+            text=f"Move {len(movable)} photos  →",
+            command=lambda: self._execute_clean(dlg, db_path, movable, dest_var),
+        ).pack(side="right")
+
+    def _execute_clean(self, dlg: tk.Toplevel, db_path: str,
+                       rows: list, dest_var: tk.StringVar):
+        dest = dest_var.get().strip()
+        if not dest:
+            messagebox.showerror("Error", "Please choose a destination folder.", parent=dlg)
+            return
+        dest_path = Path(dest)
+        dlg.destroy()
+
+        self._clear()
+        self._status.config(text="Running…")
+        self._append(f"Moving {len(rows)} discarded photos to {dest}…\n\n")
+
+        def worker():
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            moved, failed = 0, 0
+            ids_done: list[int] = []
+
+            for r in rows:
+                src = Path(r["source_file"])
+                name = r["original_filename"] or r["file_name"] or src.name
+
+                if not src.exists():
+                    self._output_q.put(f"  Not found on disk — removing from catalog: {name}\n")
+                    ids_done.append(r["id"])
+                    continue
+
+                # Date-based folder structure
+                date_str = (r["date_original"] or "")[:10]
+                if date_str and len(date_str) == 10:
+                    y, m, d = date_str.split("-")
+                    folder = dest_path / y / m / d
+                else:
+                    folder = dest_path / "NoDate"
+                folder.mkdir(parents=True, exist_ok=True)
+
+                # Collision-safe destination filename
+                dst = folder / name
+                if dst.exists():
+                    stem, suffix = Path(name).stem, Path(name).suffix
+                    n = 1
+                    while dst.exists():
+                        dst = folder / f"{stem}_{n}{suffix}"
+                        n += 1
+
+                try:
+                    shutil.move(str(src), str(dst))
+                    ids_done.append(r["id"])
+                    moved += 1
+                    self._output_q.put(f"  {src.name}  →  {dst.relative_to(dest_path)}\n")
+                except Exception as e:
+                    self._output_q.put(f"  Failed: {src.name} — {e}\n")
+                    failed += 1
+
+            # Remove processed photos from DB in chunks (SQLite param limit = 999)
+            chunk = 500
+            for i in range(0, len(ids_done), chunk):
+                batch = ids_done[i : i + chunk]
+                ph = ",".join("?" * len(batch))
+                conn.execute(f"DELETE FROM decisions        WHERE photo_id IN ({ph})", batch)
+                conn.execute(f"DELETE FROM duplicate_groups WHERE photo_id IN ({ph})", batch)
+                conn.execute(f"DELETE FROM photos           WHERE id       IN ({ph})", batch)
+            conn.commit()
+            conn.close()
+
+            summary = f"\nDone — moved {moved}"
+            if failed:
+                summary += f", failed {failed}"
+            summary += f".  {len(ids_done) - moved} catalog entries removed without a local file.\n"
+            self._output_q.put(summary)
+            self._output_q.put(None)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ── About / Updates tab ───────────────────────────────────────────────────
 
