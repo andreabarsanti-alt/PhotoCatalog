@@ -161,6 +161,7 @@ class PhotoCatalogApp(tk.Tk):
         self._build_ingest_tab()
         self._build_find_tab()
         self._build_browse_tab()
+        self._build_export_clean_tab()
         self._build_about_tab()
 
     # ── Add to Catalog tab ────────────────────────────────────────────────────
@@ -425,20 +426,199 @@ class PhotoCatalogApp(tk.Tk):
             foreground="gray",
         ).grid(row=3, column=0, sticky="w", pady=(8, 0))
 
-        ttk.Separator(tab, orient="horizontal").grid(
-            row=4, column=0, sticky="ew", pady=(14, 10)
+
+    # ── Export & Clean tab ────────────────────────────────────────────────────
+
+    def _build_export_clean_tab(self):
+        tab = ttk.Frame(self._nb, padding=10)
+        self._nb.add(tab, text="  Export & Clean  ")
+        tab.columnconfigure(0, weight=1)
+
+        # ── Export section ───────────────────────────────────────────────────
+        ef = ttk.LabelFrame(tab, text="Export Catalog", padding=10)
+        ef.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        ef.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            ef,
+            text="Copy non-discarded photos to a folder organized by date (YYYY/MM/DD).\n"
+                 "Original filenames are preserved. All embedded metadata is kept.",
+            justify="left",
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+        ttk.Label(ef, text="Include:").grid(row=1, column=0, sticky="w")
+        self._export_scope = tk.StringVar(value="all")
+        scope_f = ttk.Frame(ef)
+        scope_f.grid(row=1, column=1, columnspan=2, sticky="w")
+        ttk.Radiobutton(scope_f, text="Keep + undecided", value="all",
+                        variable=self._export_scope).pack(side="left")
+        ttk.Radiobutton(scope_f, text="Keep-flagged only", value="keep",
+                        variable=self._export_scope).pack(side="left", padx=(16, 0))
+
+        ttk.Label(ef, text="Export to:").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        self._export_dest = tk.StringVar()
+        ttk.Entry(ef, textvariable=self._export_dest).grid(
+            row=2, column=1, sticky="ew", padx=(8, 6), pady=(8, 0)
+        )
+        ttk.Button(
+            ef, text="Browse…",
+            command=lambda: self._export_dest.set(
+                filedialog.askdirectory(title="Export photos to…") or self._export_dest.get()
+            ),
+        ).grid(row=2, column=2, pady=(8, 0))
+
+        ttk.Label(
+            ef,
+            text="Note: MacPhotos edits (adjustments) are not applied — originals are copied.\n"
+                 "iCloud-only photos (no local file) are skipped.",
+            foreground="gray", justify="left",
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        ttk.Button(ef, text="▶  Export photos", command=self._run_export).grid(
+            row=4, column=0, columnspan=3, sticky="e", pady=(10, 0)
         )
 
-        clean_row = ttk.Frame(tab)
-        clean_row.grid(row=5, column=0, sticky="w")
-        ttk.Button(
-            clean_row, text="🗑  Clean Catalog…", command=self._show_clean_dialog
-        ).pack(side="left")
+        # ── Clean section ────────────────────────────────────────────────────
+        cf = ttk.LabelFrame(tab, text="Clean Catalog", padding=10)
+        cf.grid(row=1, column=0, sticky="ew")
         ttk.Label(
-            clean_row,
-            text="  Move all Discarded photos to a folder and remove them from the catalog.",
-            foreground="gray",
-        ).pack(side="left")
+            cf,
+            text="Move Discarded photos out of the catalog (by source: move files,\n"
+                 "add to Photos album, or mark in Lightroom) and remove from the catalog.",
+            justify="left",
+        ).pack(anchor="w")
+        ttk.Button(cf, text="🗑  Clean Catalog…", command=self._show_clean_dialog).pack(
+            anchor="e", pady=(8, 0)
+        )
+
+    def _run_export(self):
+        db_path = self.db_path.get().strip()
+        if not db_path or not Path(db_path).exists():
+            messagebox.showerror("Error", "Catalog database not found.")
+            return
+        dest = self._export_dest.get().strip()
+        if not dest:
+            messagebox.showerror("Error", "Please choose an export destination folder.")
+            return
+
+        scope = self._export_scope.get()
+
+        # Query count first for confirmation
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        if scope == "keep":
+            count = conn.execute("""
+                SELECT COUNT(*) FROM photos p
+                JOIN decisions d ON d.photo_id = p.id
+                WHERE d.action = 'keep'
+            """).fetchone()[0]
+        else:
+            count = conn.execute("""
+                SELECT COUNT(*) FROM photos p
+                WHERE p.id NOT IN (
+                    SELECT photo_id FROM decisions WHERE action = 'discard'
+                )
+            """).fetchone()[0]
+        conn.close()
+
+        if count == 0:
+            messagebox.showinfo("Export", "No photos match the selected scope.")
+            return
+
+        label = "Keep-flagged" if scope == "keep" else "Keep + undecided"
+        if not messagebox.askyesno(
+            "Export Catalog",
+            f"Export {count:,} photos ({label}) to:\n{dest}\n\nProceed?",
+        ):
+            return
+
+        Path(dest).mkdir(parents=True, exist_ok=True)
+        self._clear()
+        self._status.config(text="Running…")
+        self._append(f"Exporting {count:,} photos to {dest}…\n\n")
+
+        def worker():
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            if scope == "keep":
+                rows = conn.execute("""
+                    SELECT p.id, p.source_file, p.source_type,
+                           p.file_name, p.original_filename, p.date_original
+                    FROM   photos p
+                    JOIN   decisions d ON d.photo_id = p.id
+                    WHERE  d.action = 'keep'
+                    ORDER  BY p.date_original
+                """).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT p.id, p.source_file, p.source_type,
+                           p.file_name, p.original_filename, p.date_original
+                    FROM   photos p
+                    WHERE  p.id NOT IN (
+                        SELECT photo_id FROM decisions WHERE action = 'discard'
+                    )
+                    ORDER  BY p.date_original
+                """).fetchall()
+            conn.close()
+
+            dest_path = Path(dest)
+            copied = skipped = failed = 0
+
+            for i, r in enumerate(rows):
+                src_str = r["source_file"] or ""
+
+                # Skip iCloud-only photos
+                if src_str.startswith("macphotos://"):
+                    self._output_q.put(f"  Skipped (iCloud-only): {r['original_filename'] or r['file_name']}\n")
+                    skipped += 1
+                    continue
+
+                src = Path(src_str)
+                if not src.exists():
+                    self._output_q.put(f"  Skipped (not on disk): {src.name}\n")
+                    skipped += 1
+                    continue
+
+                # Destination name: prefer original_filename (preserves original name for MacPhotos)
+                name = r["original_filename"] or r["file_name"] or src.name
+
+                # Date-based folder
+                date_str = (r["date_original"] or "")[:10]
+                if date_str and len(date_str) == 10:
+                    y, m, d = date_str.split("-")
+                    folder = dest_path / y / m / d
+                else:
+                    folder = dest_path / "NoDate"
+                folder.mkdir(parents=True, exist_ok=True)
+
+                # Collision-safe name
+                dst = folder / name
+                if dst.exists():
+                    stem, suffix = Path(name).stem, Path(name).suffix
+                    n = 1
+                    while dst.exists():
+                        dst = folder / f"{stem}_{n}{suffix}"
+                        n += 1
+
+                try:
+                    shutil.copy2(str(src), str(dst))
+                    copied += 1
+                    if copied % 100 == 0:
+                        self._output_q.put(f"  {copied}/{len(rows)} copied…\n")
+                except Exception as e:
+                    self._output_q.put(f"  Failed: {src.name} — {e}\n")
+                    failed += 1
+
+            summary = f"\nDone — {copied:,} copied"
+            if skipped:
+                summary += f", {skipped} skipped"
+            if failed:
+                summary += f", {failed} failed"
+            summary += f"\nDestination: {dest}\n"
+            self._output_q.put(summary)
+            self._output_q.put(None)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _run_browse(self):
         db = self.db_path.get().strip()
