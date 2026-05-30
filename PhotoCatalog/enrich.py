@@ -239,7 +239,7 @@ def download_cloud_photos(
 
 def main() -> None:
     import argparse
-    from .db import connect
+    from .db import connect, init_db
 
     parser = argparse.ArgumentParser(description="Compute perceptual hashes for a catalog.")
     parser.add_argument("--db", required=True, help="Path to the SQLite catalog database file.")
@@ -258,6 +258,7 @@ def main() -> None:
     args = parser.parse_args()
 
     conn = connect(args.db)
+    init_db(conn)
     try:
         if args.fuzzy:
             if args.reset:

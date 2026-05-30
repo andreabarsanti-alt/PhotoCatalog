@@ -165,22 +165,23 @@ def init_db(conn: sqlite3.Connection, drop_existing: bool = False) -> None:
     if drop_existing:
         conn.execute("DROP VIEW  IF EXISTS photos_with_groups")
         conn.execute("DROP TABLE IF EXISTS duplicate_groups")
+        conn.execute("DROP TABLE IF EXISTS decisions")
         conn.execute("DROP TABLE IF EXISTS photos")
         conn.execute("DROP TABLE IF EXISTS sources")
         conn.commit()
     conn.executescript(_PHOTOS_TABLE)
-    conn.executescript(_PHOTOS_INDEXES)
-    conn.executescript(_SOURCES_TABLE)
-    conn.executescript(_DUPLICATE_GROUPS_TABLE)
-    conn.executescript(_DECISIONS_TABLE)
-    conn.executescript(_PHOTOS_WITH_GROUPS_VIEW)
-    # Migrate existing databases that predate source_catalog
+    # Column migrations must run before indexes that reference those columns
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(photos)")}
     if "source_catalog" not in existing_cols:
         conn.execute("ALTER TABLE photos ADD COLUMN source_catalog TEXT")
     if "perceptual_hash_small" not in existing_cols:
         conn.execute("ALTER TABLE photos ADD COLUMN perceptual_hash_small TEXT")
     conn.commit()
+    conn.executescript(_PHOTOS_INDEXES)
+    conn.executescript(_SOURCES_TABLE)
+    conn.executescript(_DUPLICATE_GROUPS_TABLE)
+    conn.executescript(_DECISIONS_TABLE)
+    conn.executescript(_PHOTOS_WITH_GROUPS_VIEW)
 
 
 def ensure_decisions_table(conn: sqlite3.Connection) -> None:

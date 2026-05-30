@@ -76,6 +76,7 @@ DEFAULT_CATALOG_DIR = Path.home() / "Pictures" / "PhotoCatalogs"
 GITHUB_REPO = "andreabarsanti-alt/PhotoCatalog"
 RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 INSTALL_DIR = Path("/Applications")
+PREFS_FILE = Path.home() / ".photocatalog_prefs.json"
 
 
 def _python_cmd() -> list[str]:
@@ -128,18 +129,94 @@ class PhotoCatalogApp(tk.Tk):
 
     # ── shared DB bar ─────────────────────────────────────────────────────────
 
+    def _load_prefs(self) -> dict:
+        try:
+            return json.loads(PREFS_FILE.read_text())
+        except Exception:
+            return {}
+
+    def _save_prefs(self, prefs: dict):
+        try:
+            PREFS_FILE.write_text(json.dumps(prefs, indent=2))
+        except Exception:
+            pass
+
+    def _find_catalogs(self) -> list[str]:
+        if not DEFAULT_CATALOG_DIR.exists():
+            return []
+        return [str(p) for p in sorted(DEFAULT_CATALOG_DIR.rglob("*.db"))]
+
+    def _find_photo_libraries(self) -> list[str]:
+        found = []
+        for root in [Path.home() / "Pictures", Path.home()]:
+            if root.exists():
+                found += [str(p) for p in sorted(root.glob("*.photoslibrary")) if p.is_dir()]
+        return found
+
+    def _merged_catalog_values(self, prefs: dict | None = None) -> list[str]:
+        if prefs is None:
+            prefs = self._load_prefs()
+        recent: list[str] = prefs.get("recent_catalogs", [])
+        scanned = self._find_catalogs()
+        seen = set(recent)
+        return recent + [c for c in scanned if c not in seen]
+
+    def _record_catalog_used(self, db_path: str):
+        if not db_path:
+            return
+        prefs = self._load_prefs()
+        recent: list[str] = prefs.get("recent_catalogs", [])
+        if db_path in recent:
+            recent.remove(db_path)
+        recent.insert(0, db_path)
+        prefs["recent_catalogs"] = recent[:10]
+        self._save_prefs(prefs)
+        self._update_combo_values(prefs)
+
+    def _update_combo_values(self, prefs: dict | None = None):
+        self._db_combo["values"] = self._merged_catalog_values(prefs)
+
+    def _refresh_catalog_info(self):
+        path = self.db_path.get().strip()
+        if not path or not Path(path).exists():
+            self._catalog_info.config(text="")
+            return
+        try:
+            conn = sqlite3.connect(path, timeout=0.5)
+            try:
+                count = conn.execute("SELECT COUNT(*) FROM photos").fetchone()[0]
+                sources = [r[0] for r in conn.execute(
+                    "SELECT DISTINCT source_type FROM photos ORDER BY source_type"
+                ).fetchall()]
+            finally:
+                conn.close()
+            info = f"{count:,} photos"
+            if sources:
+                info += "  |  " + ", ".join(sources)
+            self._catalog_info.config(text=info)
+        except Exception:
+            self._catalog_info.config(text="")
+
     def _build_db_bar(self):
         frame = ttk.LabelFrame(self, text="Catalog Database (.db file)", padding=6)
         frame.pack(fill="x", padx=12, pady=(12, 4))
         frame.columnconfigure(0, weight=1)
 
-        self.db_path = tk.StringVar(
-            value=str(DEFAULT_CATALOG_DIR / "MyCatalog" / "MyCatalog.db")
-        )
-        ttk.Entry(frame, textvariable=self.db_path).grid(
-            row=0, column=0, sticky="ew", padx=(0, 6)
-        )
+        values = self._merged_catalog_values()
+        initial = values[0] if values else str(DEFAULT_CATALOG_DIR / "MyCatalog" / "MyCatalog.db")
+
+        self.db_path = tk.StringVar(value=initial)
+        self._db_combo = ttk.Combobox(frame, textvariable=self.db_path, values=values)
+        self._db_combo.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self._db_combo.bind("<<ComboboxSelected>>", lambda _: self._refresh_catalog_info())
+        self._db_combo.bind("<FocusOut>", lambda _: self._refresh_catalog_info())
+
         ttk.Button(frame, text="Browse…", command=self._browse_db).grid(row=0, column=1)
+
+        self._catalog_info = ttk.Label(frame, text="", foreground="gray")
+        self._catalog_info.grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+        self._refresh_catalog_info()
 
     def _browse_db(self):
         init = Path(self.db_path.get()).parent
@@ -152,6 +229,7 @@ class PhotoCatalogApp(tk.Tk):
         )
         if p:
             self.db_path.set(p)
+            self._refresh_catalog_info()
 
     # ── notebook ──────────────────────────────────────────────────────────────
 
@@ -281,21 +359,66 @@ class PhotoCatalogApp(tk.Tk):
                 filetypes=[("Lightroom catalog", "*.lrcat"), ("All", "*.*")],
             )
         elif st == "MacPhotos":
-            # Use AppleScript so that .photoslibrary bundles appear as selectable
-            # items — tkinter's askdirectory descends into them instead of selecting them.
-            try:
-                result = subprocess.run(
-                    ["osascript", "-e",
-                     'POSIX path of (choose folder with prompt "Select Photos Library (.photoslibrary)")'],
-                    capture_output=True, text=True,
-                )
-                p = result.stdout.strip() if result.returncode == 0 else ""
-            except Exception:
-                p = filedialog.askdirectory(title="Select Photos library (.photoslibrary)")
+            p = self._pick_photos_library()
         else:
             p = filedialog.askdirectory(title="Select folder to scan")
         if p:
             self._src_path.set(p)
+
+    def _pick_photos_library(self) -> str:
+        """Show a dialog listing discovered .photoslibrary bundles, with a Browse fallback."""
+        libs = self._find_photo_libraries()
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Select Photos Library")
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+
+        result = [""]
+
+        if libs:
+            ttk.Label(dlg, text="Found Photos libraries:", padding=(12, 10, 12, 4)).pack(anchor="w")
+            var = tk.StringVar(value=libs[0])
+            for lib in libs:
+                ttk.Radiobutton(
+                    dlg, text=Path(lib).name, value=lib, variable=var,
+                ).pack(anchor="w", padx=24, pady=2)
+
+            def _ok():
+                result[0] = var.get()
+                dlg.destroy()
+
+            btn_row = ttk.Frame(dlg, padding=(12, 8, 12, 12))
+            btn_row.pack(fill="x")
+            ttk.Button(btn_row, text="Select", command=_ok).pack(side="right", padx=(4, 0))
+        else:
+            ttk.Label(
+                dlg,
+                text="No .photoslibrary bundles found in ~/Pictures.\nBrowse manually:",
+                padding=(12, 10, 12, 4),
+                justify="left",
+            ).pack(anchor="w")
+            btn_row = ttk.Frame(dlg, padding=(12, 4, 12, 12))
+            btn_row.pack(fill="x")
+
+        def _browse_manual():
+            dlg.destroy()
+            try:
+                r = subprocess.run(
+                    ["osascript", "-e",
+                     'POSIX path of (choose folder with prompt "Select Photos Library (.photoslibrary)")'],
+                    capture_output=True, text=True,
+                )
+                result[0] = r.stdout.strip() if r.returncode == 0 else ""
+            except Exception:
+                result[0] = filedialog.askdirectory(title="Select Photos library (.photoslibrary)")
+
+        ttk.Button(btn_row, text="Browse…", command=_browse_manual).pack(side="left")
+        ttk.Button(btn_row, text="Cancel", command=dlg.destroy).pack(side="right")
+
+        dlg.wait_window()
+        return result[0]
 
     def _browse_dl_dir(self):
         p = filedialog.askdirectory(title="Select iCloud download directory")
@@ -516,6 +639,7 @@ class PhotoCatalogApp(tk.Tk):
         if not dest:
             messagebox.showerror("Error", "Please choose an export destination folder.")
             return
+        self._record_catalog_used(db_path)
 
         scope = self._export_scope.get()
 
@@ -677,6 +801,7 @@ class PhotoCatalogApp(tk.Tk):
         if not Path(db_path).exists():
             messagebox.showerror("Error", f"Database not found:\n{db_path}")
             return
+        self._record_catalog_used(db_path)
 
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -1240,6 +1365,7 @@ class PhotoCatalogApp(tk.Tk):
                 return
             self._proc.terminate()
 
+        self._record_catalog_used(self.db_path.get().strip())
         self._clear()
         self._status.config(text="Running…")
         display = " ".join(f'"{c}"' if " " in c else c for c in cmd)
