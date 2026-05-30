@@ -370,6 +370,144 @@ def _keep_best(metric: str, allowed: set | None = None) -> dict:
     return {"ok": True, "discarded": discarded}
 
 
+def _keep_has_original_filename(allowed: set | None = None) -> dict:
+    """In each group, discard photos that have no original_filename when at least one does."""
+    from collections import defaultdict
+    db = _conn()
+    rows = db.execute("""
+        SELECT dg.strategy, dg.group_id,
+               p.id AS photo_id, p.original_filename
+        FROM   duplicate_groups dg
+        JOIN   photos p ON p.id = dg.photo_id
+        LEFT JOIN decisions dec ON dec.photo_id = p.id
+        WHERE  dec.photo_id IS NULL
+    """).fetchall()
+
+    groups: dict = defaultdict(list)
+    for r in rows:
+        groups[(r["strategy"], r["group_id"])].append(r)
+
+    discarded = 0
+    for key, photos in groups.items():
+        if allowed is not None and key not in allowed:
+            continue
+        if len(photos) <= 1:
+            continue
+        has_orig = [p for p in photos if p["original_filename"]]
+        no_orig  = [p for p in photos if not p["original_filename"]]
+        if not has_orig or not no_orig:
+            continue
+        for p in no_orig:
+            db.execute("""
+                INSERT INTO decisions (photo_id, action) VALUES (?, 'discard')
+                ON CONFLICT (photo_id) DO UPDATE
+                    SET action = 'discard', decided_at = datetime('now')
+            """, (p["photo_id"],))
+            discarded += 1
+
+    db.commit()
+    db.close()
+    return {"ok": True, "discarded": discarded}
+
+
+def _keep_by_filename_length(prefer: str, allowed: set | None = None) -> dict:
+    """Discard all but the photo with the shortest/longest filename stem in each group.
+
+    prefer: 'shorter' | 'longer'
+    Uses original_filename when available (falls back to file_name).
+    Ties are left untouched.
+    """
+    from collections import defaultdict
+    db = _conn()
+    rows = db.execute("""
+        SELECT dg.strategy, dg.group_id,
+               p.id AS photo_id, p.file_name, p.original_filename
+        FROM   duplicate_groups dg
+        JOIN   photos p ON p.id = dg.photo_id
+        LEFT JOIN decisions dec ON dec.photo_id = p.id
+        WHERE  dec.photo_id IS NULL
+    """).fetchall()
+
+    groups: dict = defaultdict(list)
+    for r in rows:
+        groups[(r["strategy"], r["group_id"])].append(r)
+
+    def stem_len(p) -> int:
+        lens = [len(Path(n).stem) for n in (p["original_filename"], p["file_name"]) if n]
+        if not lens:
+            return 0
+        return min(lens) if prefer == "shorter" else max(lens)
+
+    discarded = 0
+    for key, photos in groups.items():
+        if allowed is not None and key not in allowed:
+            continue
+        if len(photos) <= 1:
+            continue
+        target = min(stem_len(p) for p in photos) if prefer == "shorter" else max(stem_len(p) for p in photos)
+        if target == 0:
+            continue
+        for p in photos:
+            if stem_len(p) != target:
+                db.execute("""
+                    INSERT INTO decisions (photo_id, action) VALUES (?, 'discard')
+                    ON CONFLICT (photo_id) DO UPDATE
+                        SET action = 'discard', decided_at = datetime('now')
+                """, (p["photo_id"],))
+                discarded += 1
+
+    db.commit()
+    db.close()
+    return {"ok": True, "discarded": discarded}
+
+
+def _keep_by_date(prefer: str, date_field: str, allowed: set | None = None) -> dict:
+    """Discard all but the oldest/newest photo (by date_field) in each undecided group.
+
+    prefer:     'oldest' | 'newest'
+    date_field: 'date_original' (date taken) | 'date_created' (date added)
+    Photos with a NULL date_field are left untouched.
+    Ties are left untouched.
+    """
+    if date_field not in ("date_original", "date_created"):
+        raise ValueError(f"Invalid date_field: {date_field!r}")
+    from collections import defaultdict
+    db = _conn()
+    rows = db.execute(f"""
+        SELECT dg.strategy, dg.group_id,
+               p.id AS photo_id, p.{date_field} AS dt
+        FROM   duplicate_groups dg
+        JOIN   photos p ON p.id = dg.photo_id
+        LEFT JOIN decisions dec ON dec.photo_id = p.id
+        WHERE  dec.photo_id IS NULL
+          AND  p.{date_field} IS NOT NULL
+    """).fetchall()
+
+    groups: dict = defaultdict(list)
+    for r in rows:
+        groups[(r["strategy"], r["group_id"])].append(r)
+
+    discarded = 0
+    for key, photos in groups.items():
+        if allowed is not None and key not in allowed:
+            continue
+        if len(photos) <= 1:
+            continue
+        target = min(p["dt"] for p in photos) if prefer == "oldest" else max(p["dt"] for p in photos)
+        for p in photos:
+            if p["dt"] != target:
+                db.execute("""
+                    INSERT INTO decisions (photo_id, action) VALUES (?, 'discard')
+                    ON CONFLICT (photo_id) DO UPDATE
+                        SET action = 'discard', decided_at = datetime('now')
+                """, (p["photo_id"],))
+                discarded += 1
+
+    db.commit()
+    db.close()
+    return {"ok": True, "discarded": discarded}
+
+
 def _keep_unique(allowed: set | None = None) -> dict:
     """In groups where exactly one photo is not discarded, mark it keep."""
     from collections import defaultdict
@@ -565,6 +703,19 @@ class _Handler(BaseHTTPRequestHandler):
                 elif action == "prefer_bigger":
                     result = _keep_best("size", allowed)
                     self._send(200, json.dumps(result).encode(), "application/json")
+                elif action in ("prefer_shorter_filename", "prefer_longer_filename"):
+                    prefer = "shorter" if "shorter" in action else "longer"
+                    result = _keep_by_filename_length(prefer, allowed)
+                    self._send(200, json.dumps(result).encode(), "application/json")
+                elif action == "prefer_has_original_filename":
+                    result = _keep_has_original_filename(allowed)
+                    self._send(200, json.dumps(result).encode(), "application/json")
+                elif action in ("prefer_oldest_taken", "prefer_newest_taken",
+                                "prefer_oldest_added", "prefer_newest_added"):
+                    prefer = "oldest" if "oldest" in action else "newest"
+                    field  = "date_original" if "taken" in action else "date_created"
+                    result = _keep_by_date(prefer, field, allowed)
+                    self._send(200, json.dumps(result).encode(), "application/json")
                 elif action == "keep_unique":
                     result = _keep_unique(allowed)
                     self._send(200, json.dumps(result).encode(), "application/json")
@@ -733,6 +884,7 @@ video.photo-thumb { background: #000; }
     <button class="action-btn" onclick="togglePrefer('filename')">Prefer filename&hellip;</button>
     <button class="action-btn" onclick="togglePrefer('path')">Prefer path&hellip;</button>
     <button class="action-btn" onclick="togglePrefer('type')">Prefer type&hellip;</button>
+    <button class="action-btn" onclick="togglePrefer('date')">Prefer date&hellip;</button>
     <button class="action-btn" onclick="instantAction('prefer_resolution')">Prefer higher resolution</button>
     <button class="action-btn" onclick="instantAction('prefer_bigger')">Prefer bigger</button>
   </div>
@@ -748,6 +900,23 @@ video.photo-thumb { background: #000; }
     <button class="action-btn" onclick="applyPrefer()">Apply</button>
     <button class="action-btn" onclick="togglePrefer(null)"
             style="border-color:#555;color:#8e8e93">Cancel</button>
+    <span id="prefer-len-sep" style="display:none;color:#8e8e93;font-size:11px;margin-left:4px">or by length:</span>
+    <button id="prefer-shorter-btn" class="action-btn" style="display:none"
+            onclick="applyFilenameLength('shorter')">Shorter</button>
+    <button id="prefer-longer-btn"  class="action-btn" style="display:none"
+            onclick="applyFilenameLength('longer')">Longer</button>
+    <button id="prefer-has-orig-btn" class="action-btn" style="display:none"
+            onclick="applyHasOriginal()" title="Keep photos that have an original filename; discard those that don't">Has original</button>
+  </div>
+  <div id="date-row" style="display:none;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">
+    <span style="color:#8e8e93;font-size:11px">Date taken:</span>
+    <button class="action-btn" onclick="applyDate('oldest','date_original')">Earlier</button>
+    <button class="action-btn" onclick="applyDate('newest','date_original')">Later</button>
+    <span style="color:#8e8e93;font-size:11px;margin-left:8px">Date added:</span>
+    <button class="action-btn" onclick="applyDate('oldest','date_created')">Earlier</button>
+    <button class="action-btn" onclick="applyDate('newest','date_created')">Later</button>
+    <button class="action-btn" onclick="togglePrefer(null)"
+            style="border-color:#555;color:#8e8e93;margin-left:4px">Cancel</button>
   </div>
 </div>
 
@@ -1099,17 +1268,31 @@ function toggleNegate() {
 }
 
 function togglePrefer(field) {
-  const row = document.getElementById('prefer-row');
-  if (!field || (_preferField === field && row.style.display !== 'none')) {
-    row.style.display = 'none';
-    _preferField  = null;
-    _preferNegate = false;
+  const row     = document.getElementById('prefer-row');
+  const dateRow = document.getElementById('date-row');
+  const isOpen  = field === 'date' ? dateRow.style.display !== 'none'
+                                   : (_preferField === field && row.style.display !== 'none');
+  // close everything
+  row.style.display     = 'none';
+  dateRow.style.display = 'none';
+  _preferField  = null;
+  _preferNegate = false;
+  if (!field || isOpen) return;
+
+  _preferField = field;
+
+  if (field === 'date') {
+    dateRow.style.display = 'flex';
     return;
   }
-  _preferField  = field;
-  _preferNegate = false;
+
+  const isFilename = field === 'filename';
   document.getElementById('prefer-input').value = '';
   _updatePreferLabel();
+  document.getElementById('prefer-len-sep').style.display      = isFilename ? '' : 'none';
+  document.getElementById('prefer-shorter-btn').style.display  = isFilename ? '' : 'none';
+  document.getElementById('prefer-longer-btn').style.display   = isFilename ? '' : 'none';
+  document.getElementById('prefer-has-orig-btn').style.display = isFilename ? '' : 'none';
   row.style.display = 'flex';
   document.getElementById('prefer-input').focus();
 }
@@ -1135,6 +1318,24 @@ function applyPrefer() {
       loadGroup(strategy, +group_id);
     }
   });
+}
+
+function applyHasOriginal() {
+  togglePrefer(null);
+  instantAction('prefer_has_original_filename');
+}
+
+function applyFilenameLength(prefer) {
+  togglePrefer(null);
+  instantAction(prefer === 'shorter' ? 'prefer_shorter_filename' : 'prefer_longer_filename');
+}
+
+function applyDate(prefer, field) {
+  const action = prefer === 'oldest'
+    ? (field === 'date_original' ? 'prefer_oldest_taken' : 'prefer_oldest_added')
+    : (field === 'date_original' ? 'prefer_newest_taken' : 'prefer_newest_added');
+  togglePrefer(null);
+  instantAction(action);
 }
 
 function noThumb() {
