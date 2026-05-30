@@ -14,73 +14,41 @@ _MOVIE_TYPES = {"MOV", "MP4", "M4V", "AVI", "MKV", "MPEG", "MPG", "3GP", "WEBM"}
 _COMMIT_BATCH = 200  # commit to DB after this many successful hashes
 
 
-def add_perceptual_hashes(conn: sqlite3.Connection, workers: int = 0) -> tuple[int, int]:
-    """
-    Compute and store perceptual hashes for image photos where either hash column is NULL.
-
-    Two hashes are computed per image in a single decode pass:
-      perceptual_hash       — phash(hash_size=16), 64 hex chars — used for exact matching
-      perceptual_hash_small — phash(hash_size=8),  16 hex chars — used for fuzzy Hamming matching
-
-    Movies are skipped — perceptual hashing does not apply to video files.
-    Cloud-only photos (source_file starting with 'macphotos://') are also skipped
-    since the file is not locally accessible.
-
-    Args:
-        workers: Parallel threads for image decode + hash (0 = auto, capped at 8).
-
-    Returns:
-        (hashed, failed) counts.
-    """
-    try:
-        import imagehash
-        from PIL import Image
-        import pillow_heif
-        pillow_heif.register_heif_opener()
-    except ImportError as e:
-        raise ImportError(f"Required: pip install imagehash Pillow pillow-heif  —  {e}")
-
+def _pending_rows(conn: sqlite3.Connection, where_col: str) -> list:
+    """Return accessible image rows where `where_col` IS NULL."""
     rows = conn.execute("""
         SELECT id, source_file, file_type
         FROM   photos
-        WHERE  (perceptual_hash IS NULL OR perceptual_hash_small IS NULL)
+        WHERE  {col} IS NULL
           AND  source_file NOT LIKE 'macphotos://%'
-          AND  UPPER(COALESCE(file_type, '')) NOT IN ({})
-    """.format(", ".join(f"'{t}'" for t in _MOVIE_TYPES))).fetchall()
+          AND  UPPER(COALESCE(file_type, '')) NOT IN ({movies})
+    """.format(col=where_col,
+               movies=", ".join(f"'{t}'" for t in _MOVIE_TYPES))).fetchall()
+    return [r for r in rows if Path(r["source_file"]).is_file()]
 
-    pending = [(row["id"], row["source_file"])
-               for row in rows if Path(row["source_file"]).is_file()]
+
+def _run_hash_pool(pending: list, n_workers: int, hash_fn, update_sql: str,
+                   conn: sqlite3.Connection, label: str) -> tuple[int, int]:
+    """Generic worker pool: open image, call hash_fn, UPDATE via update_sql."""
     hashed = 0
-    failed = len(rows) - len(pending)  # inaccessible files
-
-    if not pending:
-        return hashed, failed
-
-    n_workers = workers if workers > 0 else min(os.cpu_count() or 4, 8)
-
-    def _hash_one(args: tuple) -> tuple[int, str | None, str | None, str | None]:
-        row_id, path = args
-        try:
-            img = Image.open(path)
-            h_large = str(imagehash.phash(img, hash_size=16))
-            h_small = str(imagehash.phash(img, hash_size=8))
-            return row_id, h_large, h_small, None
-        except Exception as e:
-            return row_id, None, None, f"{type(e).__name__}: {e}"
-
+    failed = 0
     pending_commit = 0
 
+    def _hash_one(args: tuple):
+        row_id, path = args
+        try:
+            from PIL import Image
+            return row_id, hash_fn(Image.open(path)), None
+        except Exception as e:
+            return row_id, None, f"{type(e).__name__}: {e}"
+
     with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        label = f"Hashing {len(pending)} images ({n_workers} threads)"
         futures_map = {pool.submit(_hash_one, item): item for item in pending}
         with tqdm(total=len(pending), desc=label, unit="img") as bar:
             for future in as_completed(futures_map):
-                row_id, h_large, h_small, err = future.result()
-                if h_large is not None:
-                    conn.execute(
-                        "UPDATE photos SET perceptual_hash = ?, perceptual_hash_small = ? WHERE id = ?",
-                        (h_large, h_small, row_id),
-                    )
+                row_id, h, err = future.result()
+                if h is not None:
+                    conn.execute(update_sql, (h, row_id))
                     hashed += 1
                     pending_commit += 1
                     if pending_commit >= _COMMIT_BATCH:
@@ -93,8 +61,91 @@ def add_perceptual_hashes(conn: sqlite3.Connection, workers: int = 0) -> tuple[i
 
     if pending_commit:
         conn.commit()
-
     return hashed, failed
+
+
+def add_perceptual_hashes(conn: sqlite3.Connection, workers: int = 0) -> tuple[int, int]:
+    """
+    Compute perceptual_hash (phash hash_size=16, 64 hex chars) for images where it is NULL.
+
+    Used for exact duplicate matching in find_unified.
+    Movies and iCloud-only photos are skipped.
+
+    Args:
+        workers: Parallel threads (0 = auto, capped at 8).
+    Returns:
+        (hashed, failed) counts.
+    """
+    try:
+        import imagehash
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except ImportError as e:
+        raise ImportError(f"Required: pip install imagehash Pillow pillow-heif  —  {e}")
+
+    pending = _pending_rows(conn, "perceptual_hash")
+    inaccessible = conn.execute("""
+        SELECT COUNT(*) FROM photos
+        WHERE perceptual_hash IS NULL
+          AND source_file NOT LIKE 'macphotos://%'
+          AND UPPER(COALESCE(file_type,'')) NOT IN ({})
+    """.format(", ".join(f"'{t}'" for t in _MOVIE_TYPES))).fetchone()[0] - len(pending)
+
+    if not pending:
+        return 0, inaccessible
+
+    n_workers = workers if workers > 0 else min(os.cpu_count() or 4, 8)
+    label = f"Hashing {len(pending)} images ({n_workers} threads)"
+    hashed, failed = _run_hash_pool(
+        pending, n_workers,
+        hash_fn=lambda img: str(imagehash.phash(img, hash_size=16)),
+        update_sql="UPDATE photos SET perceptual_hash = ? WHERE id = ?",
+        conn=conn,
+        label=label,
+    )
+    return hashed, failed + inaccessible
+
+
+def add_fuzzy_hashes(conn: sqlite3.Connection, workers: int = 0) -> tuple[int, int]:
+    """
+    Compute perceptual_hash_small (phash hash_size=8, 16 hex chars) for images where it is NULL.
+
+    Used for fuzzy Hamming-distance matching in find_unified (signal 4).
+    Movies and iCloud-only photos are skipped.
+
+    Args:
+        workers: Parallel threads (0 = auto, capped at 8).
+    Returns:
+        (hashed, failed) counts.
+    """
+    try:
+        import imagehash
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    except ImportError as e:
+        raise ImportError(f"Required: pip install imagehash Pillow pillow-heif  —  {e}")
+
+    pending = _pending_rows(conn, "perceptual_hash_small")
+    inaccessible = conn.execute("""
+        SELECT COUNT(*) FROM photos
+        WHERE perceptual_hash_small IS NULL
+          AND source_file NOT LIKE 'macphotos://%'
+          AND UPPER(COALESCE(file_type,'')) NOT IN ({})
+    """.format(", ".join(f"'{t}'" for t in _MOVIE_TYPES))).fetchone()[0] - len(pending)
+
+    if not pending:
+        return 0, inaccessible
+
+    n_workers = workers if workers > 0 else min(os.cpu_count() or 4, 8)
+    label = f"Fuzzy-hashing {len(pending)} images ({n_workers} threads)"
+    hashed, failed = _run_hash_pool(
+        pending, n_workers,
+        hash_fn=lambda img: str(imagehash.phash(img, hash_size=8)),
+        update_sql="UPDATE photos SET perceptual_hash_small = ? WHERE id = ?",
+        conn=conn,
+        label=label,
+    )
+    return hashed, failed + inaccessible
 
 
 def download_cloud_photos(
@@ -198,18 +249,30 @@ def main() -> None:
     )
     parser.add_argument(
         "--reset", action="store_true",
-        help="Clear all existing perceptual hashes and recompute from scratch."
+        help="Clear existing hashes for the selected mode and recompute from scratch."
+    )
+    parser.add_argument(
+        "--fuzzy", action="store_true",
+        help="Compute perceptual_hash_small (hash_size=8) for fuzzy matching instead of the normal hash."
     )
     args = parser.parse_args()
 
     conn = connect(args.db)
     try:
-        if args.reset:
-            conn.execute("UPDATE photos SET perceptual_hash = NULL, perceptual_hash_small = NULL")
-            conn.commit()
-            print("Reset: cleared all existing perceptual hashes.")
-        hashed, failed = add_perceptual_hashes(conn, workers=args.workers)
-        print(f"Hashed : {hashed}")
+        if args.fuzzy:
+            if args.reset:
+                conn.execute("UPDATE photos SET perceptual_hash_small = NULL")
+                conn.commit()
+                print("Reset: cleared all fuzzy hashes.")
+            hashed, failed = add_fuzzy_hashes(conn, workers=args.workers)
+            print(f"Fuzzy-hashed : {hashed}")
+        else:
+            if args.reset:
+                conn.execute("UPDATE photos SET perceptual_hash = NULL")
+                conn.commit()
+                print("Reset: cleared all perceptual hashes.")
+            hashed, failed = add_perceptual_hashes(conn, workers=args.workers)
+            print(f"Hashed : {hashed}")
         if failed:
             print(f"Failed : {failed} (unreadable files)")
     finally:

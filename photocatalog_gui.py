@@ -197,6 +197,8 @@ class PhotoCatalogApp(tk.Tk):
         ttk.Button(right, text="▶  Compute Hashes", command=self._run_compute_hashes).pack(
             side="left"
         )
+        ttk.Button(right, text="▶  Compute Fuzzy Hashes",
+                   command=self._run_compute_fuzzy_hashes).pack(side="left", padx=(10, 0))
 
         # ── source type ──────────────────────────────────────────────────────
         sf = ttk.LabelFrame(tab, text="Source type", padding=6)
@@ -345,6 +347,20 @@ class PhotoCatalogApp(tk.Tk):
             cmd = prefix + ["compute-hashes", "--db", db]
         else:
             cmd = prefix + ["PhotoCatalog.enrich", "--db", db]
+        if self._hash_fresh.get():
+            cmd.append("--reset")
+        self._run_cmd(cmd, caffeinate=True)
+
+    def _run_compute_fuzzy_hashes(self):
+        db = self.db_path.get().strip()
+        if not db:
+            messagebox.showerror("Error", "Catalog database path is required.")
+            return
+        prefix = _python_cmd()
+        if getattr(sys, "frozen", False):
+            cmd = prefix + ["compute-hashes", "--db", db, "--fuzzy"]
+        else:
+            cmd = prefix + ["PhotoCatalog.enrich", "--db", db, "--fuzzy"]
         if self._hash_fresh.get():
             cmd.append("--reset")
         self._run_cmd(cmd, caffeinate=True)
