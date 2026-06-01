@@ -1,0 +1,190 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background -->
+    <linearGradient id="bg" x1="512" y1="0" x2="512" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#232c40"/>
+      <stop offset="100%" stop-color="#0e1220"/>
+    </linearGradient>
+
+    <!-- Outer rim: bright-to-dark sweep (top-left lit) -->
+    <linearGradient id="rimGrad" x1="180" y1="180" x2="844" y2="844" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#dce4f0"/>
+      <stop offset="35%"  stop-color="#9ca4b4"/>
+      <stop offset="100%" stop-color="#3c4250"/>
+    </linearGradient>
+
+    <!-- Main barrel: metallic, top-left light source -->
+    <radialGradient id="barrelGrad" cx="345" cy="335" r="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#8e96a8"/>
+      <stop offset="35%"  stop-color="#686e7e"/>
+      <stop offset="72%"  stop-color="#464c5a"/>
+      <stop offset="100%" stop-color="#2e3240"/>
+    </radialGradient>
+
+    <!-- Inner step ring: darker machined metal -->
+    <radialGradient id="stepGrad" cx="378" cy="365" r="270" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#4e5462"/>
+      <stop offset="55%"  stop-color="#2e3238"/>
+      <stop offset="100%" stop-color="#1c1e26"/>
+    </radialGradient>
+
+    <!-- Glass: deep blue AR-coating (Canon L / Leica look) -->
+    <radialGradient id="glassGrad" cx="428" cy="402" r="310" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#2a4ea0"/>
+      <stop offset="28%"  stop-color="#1a3272"/>
+      <stop offset="62%"  stop-color="#0e1e48"/>
+      <stop offset="100%" stop-color="#060c1e"/>
+    </radialGradient>
+
+    <!-- Glass edge iridescence: blue-green shimmer at perimeter -->
+    <radialGradient id="iridescence" cx="512" cy="512" r="338" gradientUnits="userSpaceOnUse">
+      <stop offset="68%"  stop-color="#000000" stop-opacity="0"/>
+      <stop offset="88%"  stop-color="#40a0e0" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#60c0a0" stop-opacity="0.30"/>
+    </radialGradient>
+
+    <!-- Center front element -->
+    <radialGradient id="centerGrad" cx="474" cy="466" r="112" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#4878d8"/>
+      <stop offset="48%"  stop-color="#1c3c88"/>
+      <stop offset="100%" stop-color="#0a1430"/>
+    </radialGradient>
+
+    <!-- Clip paths -->
+    <clipPath id="iconClip">
+      <rect width="1024" height="1024" rx="224" ry="224"/>
+    </clipPath>
+    <clipPath id="glassClip">
+      <circle cx="512" cy="512" r="336"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#iconClip)">
+
+    <!-- ── BACKGROUND ────────────────────────────────────── -->
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+
+    <!-- Contact-sheet grid (very subtle, reference to catalog) -->
+    <g stroke="#ffffff" stroke-width="0.9" stroke-opacity="0.045" fill="none">
+      <line x1="64"  y1="0" x2="64"  y2="1024"/><line x1="128" y1="0" x2="128" y2="1024"/>
+      <line x1="192" y1="0" x2="192" y2="1024"/><line x1="256" y1="0" x2="256" y2="1024"/>
+      <line x1="320" y1="0" x2="320" y2="1024"/><line x1="384" y1="0" x2="384" y2="1024"/>
+      <line x1="448" y1="0" x2="448" y2="1024"/><line x1="512" y1="0" x2="512" y2="1024"/>
+      <line x1="576" y1="0" x2="576" y2="1024"/><line x1="640" y1="0" x2="640" y2="1024"/>
+      <line x1="704" y1="0" x2="704" y2="1024"/><line x1="768" y1="0" x2="768" y2="1024"/>
+      <line x1="832" y1="0" x2="832" y2="1024"/><line x1="896" y1="0" x2="896" y2="1024"/>
+      <line x1="960" y1="0" x2="960" y2="1024"/>
+      <line x1="0" y1="64"  x2="1024" y2="64" /><line x1="0" y1="128" x2="1024" y2="128"/>
+      <line x1="0" y1="192" x2="1024" y2="192"/><line x1="0" y1="256" x2="1024" y2="256"/>
+      <line x1="0" y1="320" x2="1024" y2="320"/><line x1="0" y1="384" x2="1024" y2="384"/>
+      <line x1="0" y1="448" x2="1024" y2="448"/><line x1="0" y1="512" x2="1024" y2="512"/>
+      <line x1="0" y1="576" x2="1024" y2="576"/><line x1="0" y1="640" x2="1024" y2="640"/>
+      <line x1="0" y1="704" x2="1024" y2="704"/><line x1="0" y1="768" x2="1024" y2="768"/>
+      <line x1="0" y1="832" x2="1024" y2="832"/><line x1="0" y1="896" x2="1024" y2="896"/>
+      <line x1="0" y1="960" x2="1024" y2="960"/>
+    </g>
+
+    <!-- ── LENS SHADOW ────────────────────────────────────── -->
+    <circle cx="512" cy="530" r="422" fill="#000000" fill-opacity="0.55"/>
+    <circle cx="512" cy="526" r="422" fill="#000000" fill-opacity="0.30"/>
+    <circle cx="512" cy="522" r="422" fill="#000000" fill-opacity="0.15"/>
+
+    <!-- ── OUTER RIM (thin bright edge) ──────────────────── -->
+    <circle cx="512" cy="512" r="422" fill="url(#rimGrad)"/>
+
+    <!-- ── MAIN BARREL ────────────────────────────────────── -->
+    <circle cx="512" cy="512" r="415" fill="url(#barrelGrad)"/>
+
+    <!-- Barrel edge darkening (cylindrical depth) -->
+    <circle cx="512" cy="512" r="415" fill="none"
+            stroke="#000000" stroke-width="20" stroke-opacity="0.35"/>
+
+    <!-- Barrel knurl band: subtle concentric rings suggesting ridged grip -->
+    <circle cx="512" cy="512" r="400" fill="none" stroke="#ffffff" stroke-width="1" stroke-opacity="0.06"/>
+    <circle cx="512" cy="512" r="393" fill="none" stroke="#000000" stroke-width="1" stroke-opacity="0.15"/>
+    <circle cx="512" cy="512" r="386" fill="none" stroke="#ffffff" stroke-width="1" stroke-opacity="0.06"/>
+
+    <!-- ── INNER STEP / BEVEL ─────────────────────────────── -->
+    <circle cx="512" cy="512" r="374" fill="#0e1016"/>
+    <circle cx="512" cy="512" r="369" fill="url(#stepGrad)"/>
+    <!-- bevel highlight -->
+    <circle cx="512" cy="512" r="369" fill="none"
+            stroke="#000000" stroke-width="6" stroke-opacity="0.5"/>
+
+    <!-- ── GLASS HOUSING RING (near-black) ───────────────── -->
+    <circle cx="512" cy="512" r="348" fill="#090b10"/>
+    <circle cx="512" cy="512" r="342" fill="#121520"/>
+
+    <!-- ── MAIN GLASS ELEMENT ─────────────────────────────── -->
+    <circle cx="512" cy="512" r="336" fill="url(#glassGrad)"/>
+
+    <!-- Iridescent edge coating -->
+    <circle cx="512" cy="512" r="336" fill="url(#iridescence)"/>
+
+    <!-- ── GLASS CONTENT (clipped to lens circle) ─────────── -->
+    <g clip-path="url(#glassClip)">
+      <!-- Faint grid inside glass — like a contact sheet seen through the lens -->
+      <g stroke="#6090d0" stroke-width="0.7" stroke-opacity="0.07" fill="none">
+        <line x1="176" y1="176" x2="848" y2="176"/><line x1="176" y1="240" x2="848" y2="240"/>
+        <line x1="176" y1="304" x2="848" y2="304"/><line x1="176" y1="368" x2="848" y2="368"/>
+        <line x1="176" y1="432" x2="848" y2="432"/><line x1="176" y1="512" x2="848" y2="512"/>
+        <line x1="176" y1="577" x2="848" y2="577"/><line x1="176" y1="641" x2="848" y2="641"/>
+        <line x1="176" y1="705" x2="848" y2="705"/><line x1="176" y1="769" x2="848" y2="769"/>
+        <line x1="176" y1="848" x2="848" y2="848"/>
+        <line x1="176" y1="176" x2="176" y2="848"/><line x1="240" y1="176" x2="240" y2="848"/>
+        <line x1="304" y1="176" x2="304" y2="848"/><line x1="368" y1="176" x2="368" y2="848"/>
+        <line x1="432" y1="176" x2="432" y2="848"/><line x1="512" y1="176" x2="512" y2="848"/>
+        <line x1="577" y1="176" x2="577" y2="848"/><line x1="641" y1="176" x2="641" y2="848"/>
+        <line x1="705" y1="176" x2="705" y2="848"/><line x1="769" y1="176" x2="769" y2="848"/>
+        <line x1="848" y1="176" x2="848" y2="848"/>
+      </g>
+    </g>
+
+    <!-- ── GLASS REFLECTIONS ───────────────────────────────── -->
+
+    <!-- Soft diffuse glow (secondary reflection, large) -->
+    <ellipse cx="412" cy="362" rx="168" ry="64"
+             fill="#ffffff" fill-opacity="0.055"
+             transform="rotate(-40 412 362)"/>
+
+    <!-- Primary specular arc (curved line — curved glass surface) -->
+    <ellipse cx="398" cy="372" rx="174" ry="55"
+             fill="none" stroke="#ffffff" stroke-width="2.2" stroke-opacity="0.42"
+             transform="rotate(-42 398 372)"/>
+
+    <!-- Bright specular streak (most intense spot, top-left) -->
+    <ellipse cx="382" cy="348" rx="46" ry="15"
+             fill="#ffffff" fill-opacity="0.62"
+             transform="rotate(-38 382 348)"/>
+    <!-- Feathered halo around streak -->
+    <ellipse cx="382" cy="348" rx="74" ry="26"
+             fill="#ffffff" fill-opacity="0.14"
+             transform="rotate(-38 382 348)"/>
+
+    <!-- Tiny secondary flare (bottom-right, opposite side — typical of lens) -->
+    <ellipse cx="634" cy="672" rx="22" ry="8"
+             fill="#8ab8f0" fill-opacity="0.18"
+             transform="rotate(-38 634 672)"/>
+
+    <!-- ── CENTER FRONT ELEMENT ───────────────────────────── -->
+    <!-- Housing ring -->
+    <circle cx="512" cy="512" r="120" fill="#060810"/>
+    <circle cx="512" cy="512" r="114" fill="url(#stepGrad)"/>
+    <!-- Glass -->
+    <circle cx="512" cy="512" r="106" fill="url(#centerGrad)"/>
+    <!-- Center reflection arc -->
+    <ellipse cx="488" cy="480" rx="34" ry="11"
+             fill="#ffffff" fill-opacity="0.58"
+             transform="rotate(-36 488 480)"/>
+    <ellipse cx="489" cy="481" rx="50" ry="19"
+             fill="#ffffff" fill-opacity="0.12"
+             transform="rotate(-36 489 481)"/>
+    <!-- Center specular dot -->
+    <circle cx="480" cy="473" r="7" fill="#ffffff" fill-opacity="0.78"/>
+
+    <!-- ── TOP-LEFT RIM GLEAM ──────────────────────────────── -->
+    <path d="M 108 404 A 418 418 0 0 1 404 108"
+          fill="none" stroke="#dce8f8" stroke-width="1.4" stroke-opacity="0.38"/>
+
+  </g>
+</svg>

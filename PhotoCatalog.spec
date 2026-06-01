@@ -179,7 +179,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="PhotoCatalog.app",
-    icon=None,              # swap in an .icns file here when you have one
+    icon="assets/PhotoCatalog.icns",
     bundle_identifier="com.andreabarsanti.photocatalog",
     version=version,
     info_plist={
