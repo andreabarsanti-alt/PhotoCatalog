@@ -2,6 +2,7 @@
 import os
 import sqlite3
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -14,6 +15,10 @@ _MOVIE_TYPES = {"MOV", "MP4", "M4V", "AVI", "MKV", "MPEG", "MPG", "3GP", "WEBM"}
 
 _COMMIT_BATCH      = 200   # commit to DB after this many successful hashes
 _SYNC_INTERVAL_SEC = 300   # sync local cache to external drive every 5 minutes
+_RATE_WINDOW       = 10    # rolling-average window for rate/ETA display
+
+# tqdm bar format: drop built-in rate and remaining; we inject our own via postfix
+_BAR_FMT = "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}{postfix}]"
 
 
 def _pending_rows(conn: sqlite3.Connection, where_col: str) -> list:
@@ -45,10 +50,28 @@ def _run_hash_pool(pending: list, n_workers: int, hash_fn, update_sql: str,
         except Exception as e:
             return row_id, None, f"{type(e).__name__}: {e}"
 
+    rate_times: deque = deque(maxlen=_RATE_WINDOW)
+
+    def _update_rate(bar: tqdm, done: int) -> None:
+        """Recompute rate/ETA from the rolling window and inject into the bar postfix."""
+        rate_times.append(time.monotonic())
+        if len(rate_times) < 2:
+            return
+        dt = rate_times[-1] - rate_times[0]
+        rate = (len(rate_times) - 1) / dt if dt > 0 else 0
+        left = len(pending) - done
+        if rate > 0 and left > 0:
+            eta_s = int(left / rate)
+            mins, secs = divmod(eta_s, 60)
+            eta_str = f"<{mins}:{secs:02d}" if mins else f"<{secs}s"
+        else:
+            eta_str = ""
+        bar.set_postfix_str(f"{rate:.1f}img/s  {eta_str}", refresh=False)
+
     pool = ThreadPoolExecutor(max_workers=n_workers)
     try:
         futures_map = {pool.submit(_hash_one, item): item for item in pending}
-        with tqdm(total=len(pending), desc=label, unit="img") as bar:
+        with tqdm(total=len(pending), desc=label, unit="img", bar_format=_BAR_FMT) as bar:
             for future in as_completed(futures_map):
                 row_id, h, err = future.result()
                 if h is not None:
@@ -65,6 +88,7 @@ def _run_hash_pool(pending: list, n_workers: int, hash_fn, update_sql: str,
                 else:
                     tqdm.write(f"  Hash failed: {futures_map[future][1]} — {err}")
                     failed += 1
+                _update_rate(bar, hashed + failed)
                 bar.update(1)
         pool.shutdown(wait=True)
     except BaseException:
