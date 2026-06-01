@@ -495,21 +495,50 @@ class PhotoCatalogApp(tk.Tk):
         self._nb.add(tab, text="  Find Duplicates  ")
         tab.columnconfigure(0, weight=1)
 
-        sf = ttk.LabelFrame(tab, text="Strategy", padding=6)
+        # ── Signals ──────────────────────────────────────────────────────────
+        sf = ttk.LabelFrame(tab, text="Signals  (photos must match on checked signals to be grouped)", padding=8)
         sf.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        self._strategy = tk.StringVar(value="phash")
-        for val, label in [
-            ("phash",    "Perceptual hash only — exact pixel-level matches  (default)"),
-            ("unified",  "Unified — combines perceptual hash + metadata + filename  (more groups, slower)"),
-            ("metadata", "Metadata only — same dimensions + date + file type"),
-            ("filename", "Filename only — same filename stem + date minute"),
-        ]:
-            ttk.Radiobutton(sf, text=label, value=val, variable=self._strategy).pack(
-                anchor="w", pady=2
-            )
+
+        _SIG_LABELS = [
+            ("phash", "pHash",    "Exact perceptual hash match  (pixel-level duplicates)"),
+            ("fuzzy", "Fuzzy",    "Near-identical hash  (light edits, re-compression, slight crops)"),
+            ("dims",  "Dims",     "Same image dimensions  (rotation-aware)"),
+            ("date",  "Date",     "Same original date"),
+            ("type",  "Type",     "Same file type"),
+            ("size",  "Size",     "Same file size"),
+            ("name",  "Name",     "Common filename stem + date minute"),
+        ]
+        self._signal_vars: dict[str, tk.BooleanVar] = {}
+        for sig, short, desc in _SIG_LABELS:
+            var = tk.BooleanVar(value=(sig == "phash"))
+            self._signal_vars[sig] = var
+            row = ttk.Frame(sf)
+            row.pack(anchor="w", pady=1)
+            ttk.Checkbutton(row, text=short, variable=var, width=7).pack(side="left")
+            ttk.Label(row, text=f"— {desc}", foreground="gray").pack(side="left")
+
+        # ── AND / OR ─────────────────────────────────────────────────────────
+        lf = ttk.LabelFrame(tab, text="Logic", padding=8)
+        lf.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        self._logic = tk.StringVar(value="OR")
+        ttk.Radiobutton(lf, text="OR   — group photos that match on ANY checked signal",
+                        value="OR",  variable=self._logic).pack(anchor="w")
+        ttk.Radiobutton(lf, text="AND — group photos that match on ALL checked signals",
+                        value="AND", variable=self._logic).pack(anchor="w")
+
+        # ── Fresh options ────────────────────────────────────────────────────
+        ff = ttk.LabelFrame(tab, text="Fresh start", padding=8)
+        ff.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        self._keep_resolved = tk.BooleanVar(value=True)
+        ttk.Radiobutton(ff,
+                        text="Keep resolved groups  — re-run only on photos not yet reviewed",
+                        variable=self._keep_resolved, value=True).pack(anchor="w")
+        ttk.Radiobutton(ff,
+                        text="Clear everything  — start completely fresh",
+                        variable=self._keep_resolved, value=False).pack(anchor="w")
 
         ttk.Button(tab, text="▶  Find Duplicates", command=self._run_find).grid(
-            row=1, column=0, pady=10
+            row=3, column=0, pady=10
         )
 
     def _run_find(self):
@@ -517,13 +546,19 @@ class PhotoCatalogApp(tk.Tk):
         if not db:
             messagebox.showerror("Error", "Catalog database path is required.")
             return
+        signals = [sig for sig, var in self._signal_vars.items() if var.get()]
+        if not signals:
+            messagebox.showerror("Error", "Select at least one signal.")
+            return
         prefix = _python_cmd()
         if getattr(sys, "frozen", False):
-            cmd = prefix + ["find-duplicates", "--db", db,
-                            "--strategy", self._strategy.get()]
+            cmd = prefix + ["find-duplicates", "--db", db]
         else:
-            cmd = prefix + ["PhotoCatalog.find_duplicates", "--db", db,
-                            "--strategy", self._strategy.get()]
+            cmd = prefix + ["PhotoCatalog.find_duplicates", "--db", db]
+        cmd += ["--signal"] + signals
+        cmd += ["--logic", self._logic.get()]
+        if self._keep_resolved.get():
+            cmd.append("--keep-resolved")
         self._run_cmd(cmd, caffeinate=True)
 
     # ── Browse Duplicates tab ─────────────────────────────────────────────────

@@ -43,14 +43,14 @@ Two tables, one view:
 - Lightroom-specific: `lr_rating`, `lr_pick`, `lr_color_labels`, and develop-setting columns
 
 **`duplicate_groups`** — one row per (strategy, photo) pair:
-- `group_id INTEGER`, `strategy TEXT` ('unified'|'phash'|'metadata'|'filename'), `photo_id`, `match_info JSON`, `found_at`
+- `group_id INTEGER`, `strategy TEXT` (always `'groups'`), `photo_id`, `match_info JSON`, `found_at`
 - PRIMARY KEY (strategy, photo_id) — one group per photo per strategy
-- Strategies are independent; re-running one clears and rewrites only its rows
+- Each run of `find_groups()` clears and rewrites all unresolved groups (resolved ones are optionally preserved)
 
-**`photos_with_groups` view** — joins photos with its three group IDs as convenience columns (`phash_group_id`, `meta_group_id`, `filename_group_id`)
+**`decisions`** — one row per photo with a keep/discard decision:
+- `photo_id INTEGER PRIMARY KEY`, `action TEXT` ('keep'|'discard'), `decided_at`
 
-**`_uf_checkpoint`** — internal table used by `find_unified` to persist scored groups between runs:
-- Dropped automatically after a successful apply; presence means a previous run was interrupted after scoring but before committing results
+**`photos_with_groups` view** — joins photos with its group IDs as convenience columns (`groups_group_id`, `phash_group_id`, `meta_group_id`, `filename_group_id`)
 
 ## Key design decisions
 - **SQLite not JSON**: the old codebase used JSON files; switching to SQLite enables incremental updates, indexed queries, and joins across sources
@@ -58,49 +58,49 @@ Two tables, one view:
 - **exifread not exiftool**: folder ingestion uses pure-Python `exifread`; no external binary dependency
 - **original_filename vs file_name**: MacPhotos renames files to UUIDs on disk; `file_name` is the UUID, `original_filename` is what was imported. Both are checked in filename duplicate strategy
 - **Rotation-aware metadata matching**: uses MIN/MAX of width/height so portrait and landscape versions match
-- **phash(hash_size=16)**: 256-bit hash (64 hex chars). Currently matching is **exact only** — two photos must produce an identical hash string. Hamming distance is NOT used anywhere in the pipeline today.
+- **Two perceptual hash columns**: `perceptual_hash` (phash hash_size=16, 64 hex chars) for exact matching; `perceptual_hash_small` (phash hash_size=8, 16 hex chars) for fuzzy Hamming matching. Both are computed at ingest.
 - **Hashing runs automatically at ingest**: `build_catalog.py` always calls `add_perceptual_hashes()` after ingestion; only files accessible on disk at that moment are hashed
 - **Lightroom file_size**: `AgLibraryFileAssetMetadata` and `AgLibraryFileDigest` are empty in this catalog; sizes come from `AgParsedImportHash` (via `id_global`, ~37% coverage) then fall back to `os.stat()` for locally accessible files
 - **insert_photos uses union of all row keys**: handles heterogeneous batches correctly
-- **Unified duplicate strategy**: union-find across 3 signals (phash, dims+date+type, stem+date_minute), then score each group on 6 binary attributes; score = (10+n) if phash else n; min_score = 2 (internal constant `_MIN_SCORE`, not exposed to users)
+- **`find_groups()` replaces old strategies**: single entry point with 7 configurable signals (phash, fuzzy, dims, date, type, size, name), AND/OR logic, and optional `--keep-resolved`. Strategy column is always `'groups'`. Score = (10+n) if phash else n; all 7 signal booleans are stored in every `match_info` row so the web UI can filter freely.
 - **`caffeinate -i`**: Build Catalog and Find Duplicates subprocesses are wrapped with `caffeinate -i` to prevent macOS idle sleep; Browse Duplicates is NOT (it runs indefinitely)
 - **Subprocess window fix**: the GUI spawns `PhotoCatalogCLI` (a plain binary in `Contents/MacOS/`) instead of the main `PhotoCatalog` app binary. Because it is NOT the `CFBundleExecutable`, macOS does not go through app-launch infrastructure for it — no extra Dock icon or window appears
 - **Parallel hashing**: `add_perceptual_hashes()` uses `ThreadPoolExecutor` with `min(os.cpu_count(), 8)` threads by default (auto, configurable via `--workers`); commits every 200 hashes instead of per-file
 
 ## Resumable operations
-Both long-running operations are safe to interrupt and resume:
+Folder ingestion is safe to interrupt and resume:
 
 **Folder ingestion** (`sources/folder.py`):
 - Before walking, queries `SELECT source_file FROM photos WHERE source_catalog = ?`
 - Filters the file list to only unprocessed files — already-ingested files are skipped entirely (no EXIF extraction, no INSERT attempt)
 - Progress bar shows 0→100% of remaining work; prints "Resuming: N already ingested, M remaining"
 
-**Find duplicates** (`find_duplicates.py`, unified strategy only):
-- After scoring completes, saves results to `_uf_checkpoint` table and commits
-- On next run: checks checkpoint validity (same photo count + same `_MIN_SCORE`); if valid, skips union-find and scoring entirely
-- If photo count changed or checkpoint is stale, discards it and runs fresh
-- After successful `DELETE + INSERT` into `duplicate_groups`, drops the checkpoint
+## find_groups() — signal-based duplicate detection (find_duplicates.py)
+Seven signals, all computed for every group and stored in `match_info`:
+- `phash` — exact perceptual hash match (hash_size=16)
+- `fuzzy` — Hamming distance ≤ 10 on hash_size=8 hash (near-duplicates, light edits)
+- `dims`  — rotation-aware (min, max) of width/height
+- `date`  — exact date_original
+- `type`  — file_type
+- `size`  — file_size
+- `name`  — common filename stem + date minute
 
-## Unified scoring (find_duplicates.py)
-Signals scored per group:
-- `phash` — all photos share the same non-null perceptual hash
-- `dims`  — all share rotation-aware (min, max) of width/height
-- `date`  — all share exact date_original
-- `type`  — all share file_type
-- `size`  — all share file_size
-- `name`  — at least one common filename stem across all photos
+`score = (10 + n_others) if phash else n_others` — groups inserted in descending score order.
 
-`score = (10 + n_others) if phash else n_others`  (n_others = count of other signals that match)
+**Logic modes**:
+- `OR`  — union-find: photos are connected if they match on ANY selected signal
+- `AND` — compound bucketing: photos grouped only when ALL selected signals match; fuzzy applied as a secondary filter within each compound bucket
 
-Groups with score < `_MIN_SCORE` (2) are discarded. Groups inserted in descending score order → group #1 = strongest. Score is not exposed to users — the signal filter badges in the web UI provide equivalent filtering interactively.
+**`--keep-resolved`**: photos in groups that already have exactly one `keep` decision are excluded from the search; their groups are preserved as-is.
 
 ## Web UI filters (serve_duplicates.py)
 Signal filter badges in the left pane narrow the group list in real time:
-- `pHash`, `Dims`, `Date`, `Type`, `Size`, `Name` — standard signal badges (from match_info)
+- `pHash`, `Fuzzy`, `Dims`, `Date`, `Type`, `Size`, `Name` — signal badges (from match_info; all 7 always present)
 - `Unique` — show groups already reduced to a single survivor (resolved groups)
 - `Video` — show only groups containing at least one video file (MOV, MP4, M4V, AVI, MKV…)
 
-`has_video` is computed in the `_all_groups()` SQL query via `MAX(CASE WHEN UPPER(file_type) IN (...) THEN 1 ELSE 0 END)`.
+Groups are sorted by score descending (strongest first), then by group_id.
+`has_video` is computed in `_all_groups()` via `MAX(CASE WHEN UPPER(file_type) IN (...) THEN 1 ELSE 0 END)`.
 
 ## How to run
 ```bash
@@ -108,15 +108,16 @@ Signal filter badges in the left pane narrow the group list in real time:
 .venv/bin/python3 -m PhotoCatalog.build_catalog --source MacPhotos --db catalog.db
 .venv/bin/python3 -m PhotoCatalog.build_catalog --source Lightroom --db catalog.db --path /path/to/catalog.lrcat
 .venv/bin/python3 -m PhotoCatalog.build_catalog --source Folder    --db catalog.db --path /Volumes/DISK/Photos
-# Hashing runs automatically after each ingest; no --hash flag needed.
+# Hashing (both exact + fuzzy) runs automatically after each ingest.
 # Safe to interrupt and re-run — already-ingested files are skipped.
 
-# Find duplicates (phash is the default — high precision, manageable group count)
+# Find duplicates — default: phash signal, OR logic
 .venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db
-# Focused single-signal runs (faster, for debugging):
-.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --strategy phash
-.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --strategy metadata
-.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --strategy filename
+# Custom signals and logic:
+.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --signal phash fuzzy --logic OR
+.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --signal phash dims date --logic AND
+# Preserve already-resolved groups, re-run only on the rest:
+.venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --keep-resolved
 
 # Browse duplicate groups (terminal)
 .venv/bin/python3 -m PhotoCatalog.explore_duplicates --db catalog.db
@@ -134,8 +135,7 @@ Signal filter badges in the left pane narrow the group list in real time:
 
 ## Next steps (in order)
 1. **Resolve duplicates** — safe strategy to mark which copy to keep (prefer MacPhotos > Lightroom > Folder, tiebreak by file size), move or record discards
-2. **Fuzzy phash matching (Hamming distance)** — add a second hash column (`perceptual_hash_small`, `hash_size=8`, 64-bit / 16 hex chars) alongside the existing `hash_size=16` one. At ingest, compute both. In `find_unified`, add a fourth union-find signal: pairs where `hamming(hash_small_a, hash_small_b) ≤ 10`. This catches near-duplicates (light edits, JPEG re-compression, slight crops) that the current exact-match misses, without replacing the high-precision 256-bit hash. `hash_size=8` is the `imagehash` library's default and sweet spot for fuzzy matching.
-3. **Multi-machine export** — portable DB or sync mechanism so the catalog can be used on different personal machines
+2. **Multi-machine export** — portable DB or sync mechanism so the catalog can be used on different personal machines
 
 ## Catalog location
 Catalogs are stored in `/Users/andrea/Pictures/PhotoCatalogs/`.

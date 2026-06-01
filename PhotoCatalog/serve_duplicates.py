@@ -78,10 +78,7 @@ def _all_groups() -> list[dict]:
             "signals":      {k: mi[k] for k in ("phash","fuzzy","dims","date","type","size","name") if k in mi},
             "has_video":    bool(r["has_video"]),
         })
-    # unified groups arrive pre-sorted by score (group_id order = score order);
-    # for legacy strategies keep them after unified, sorted by group_id
     result.sort(key=lambda g: (
-        0 if g["strategy"] == "unified" else 1,
         -(g["score"] or 0),
         g["group_id"],
     ))

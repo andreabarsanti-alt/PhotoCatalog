@@ -142,10 +142,12 @@ _PHOTOS_WITH_GROUPS_VIEW = """
 CREATE VIEW IF NOT EXISTS photos_with_groups AS
 SELECT
     p.*,
+    gr.group_id  AS groups_group_id,
     ph.group_id  AS phash_group_id,
     me.group_id  AS meta_group_id,
     fn.group_id  AS filename_group_id
 FROM   photos p
+LEFT JOIN duplicate_groups gr ON gr.photo_id = p.id AND gr.strategy = 'groups'
 LEFT JOIN duplicate_groups ph ON ph.photo_id = p.id AND ph.strategy = 'phash'
 LEFT JOIN duplicate_groups me ON me.photo_id = p.id AND me.strategy = 'metadata'
 LEFT JOIN duplicate_groups fn ON fn.photo_id = p.id AND fn.strategy = 'filename';
