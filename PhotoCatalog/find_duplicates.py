@@ -353,6 +353,11 @@ def find_groups(
         scored.append((score, pids, sigs))
     scored.sort(key=lambda x: -x[0])
 
+    # ── Remove legacy strategy rows from pre-v1.1.1 (unified/phash/metadata/filename)
+    conn.execute(
+        "DELETE FROM duplicate_groups WHERE strategy IN ('unified','phash','metadata','filename')"
+    )
+
     # ── Clear old unresolved groups ────────────────────────────────────────
     if keep_resolved and excluded:
         # Delete only the non-resolved groups
