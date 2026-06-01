@@ -102,8 +102,8 @@ class PhotoCatalogApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"PhotoCatalog  v{__version__}")
-        self.geometry("780x720")
-        self.minsize(660, 560)
+        self.geometry("1000x720")
+        self.minsize(800, 560)
 
         if not getattr(sys, "frozen", False) and not Path(VENV_PYTHON).exists():
             messagebox.showerror(
@@ -216,7 +216,7 @@ class PhotoCatalogApp(tk.Tk):
         self._catalog_info = ttk.Label(frame, text="", foreground="gray")
         self._catalog_info.grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
-        self._refresh_catalog_info()
+        self.after(0, self._refresh_catalog_info)
 
     def _browse_db(self):
         init = Path(self.db_path.get()).parent
@@ -497,10 +497,10 @@ class PhotoCatalogApp(tk.Tk):
 
         sf = ttk.LabelFrame(tab, text="Strategy", padding=6)
         sf.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-        self._strategy = tk.StringVar(value="unified")
+        self._strategy = tk.StringVar(value="phash")
         for val, label in [
-            ("unified",  "Unified  (recommended) — combines perceptual hash + metadata + filename"),
-            ("phash",    "Perceptual hash only — exact pixel-level matches"),
+            ("phash",    "Perceptual hash only — exact pixel-level matches  (default)"),
+            ("unified",  "Unified — combines perceptual hash + metadata + filename  (more groups, slower)"),
             ("metadata", "Metadata only — same dimensions + date + file type"),
             ("filename", "Filename only — same filename stem + date minute"),
         ]:

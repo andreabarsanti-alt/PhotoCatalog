@@ -111,7 +111,7 @@ Signal filter badges in the left pane narrow the group list in real time:
 # Hashing runs automatically after each ingest; no --hash flag needed.
 # Safe to interrupt and re-run — already-ingested files are skipped.
 
-# Find duplicates (unified is the default and recommended)
+# Find duplicates (phash is the default — high precision, manageable group count)
 .venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db
 # Focused single-signal runs (faster, for debugging):
 .venv/bin/python3 -m PhotoCatalog.find_duplicates --db catalog.db --strategy phash

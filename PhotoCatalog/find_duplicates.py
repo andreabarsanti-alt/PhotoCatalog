@@ -2,14 +2,11 @@
 Find duplicate photos and store results in the duplicate_groups table.
 
 Run from the repo root:
-    python -m PhotoCatalog.find_duplicates --db catalog.db              # unified (recommended)
-    python -m PhotoCatalog.find_duplicates --db catalog.db --strategy phash
+    python -m PhotoCatalog.find_duplicates --db catalog.db              # phash (default)
+    python -m PhotoCatalog.find_duplicates --db catalog.db --strategy unified
 
 Groups are assigned IDs in descending score order so group #1 is always the
 strongest match. Re-running clears and rewrites only the chosen strategy's rows.
-
-The three focused strategies (phash / metadata / filename) are kept for
-debugging; the recommended workflow is the unified strategy.
 """
 import argparse
 import json
@@ -482,10 +479,11 @@ def main() -> None:
     )
     parser.add_argument("--db", required=True)
     parser.add_argument(
-        "--strategy", default="unified",
+        "--strategy", default="phash",
         choices=["unified", "phash", "metadata", "filename"],
-        help="unified (default) — scored union-find across all signals. "
-             "phash/metadata/filename run a single focused signal.",
+        help="phash (default) — exact perceptual hash matches only. "
+             "unified — scored union-find across all signals (more groups, slower). "
+             "metadata/filename run a single focused signal.",
     )
     args = parser.parse_args()
 
