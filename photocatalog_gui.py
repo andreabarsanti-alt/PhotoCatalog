@@ -261,7 +261,7 @@ class PhotoCatalogApp(tk.Tk):
             side="left", padx=(0, 8)
         )
         self._gen_hashes = tk.BooleanVar()
-        ttk.Checkbutton(left, text="Generate hashes", variable=self._gen_hashes).pack(
+        ttk.Checkbutton(left, text="Compute hashes", variable=self._gen_hashes).pack(
             side="left", padx=(0, 10)
         )
         ttk.Button(left, text="▶  Add to Catalog", command=self._run_ingest).pack(side="left")

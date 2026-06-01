@@ -1,6 +1,7 @@
 """Enrichment operations that add computed fields to an existing catalog database."""
 import os
 import sqlite3
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -11,7 +12,8 @@ _IMAGE_TYPES = {"JPEG", "JPG", "PNG", "HEIC", "HEIF", "TIFF", "WEBP", "BMP", "GI
                 "CR2", "CR3", "NEF", "ARW", "ORF", "RW2", "DNG", "RAF"}
 _MOVIE_TYPES = {"MOV", "MP4", "M4V", "AVI", "MKV", "MPEG", "MPG", "3GP", "WEBM"}
 
-_COMMIT_BATCH = 200  # commit to DB after this many successful hashes
+_COMMIT_BATCH      = 200   # commit to DB after this many successful hashes
+_SYNC_INTERVAL_SEC = 300   # sync local cache to external drive every 5 minutes
 
 
 def _pending_rows(conn: sqlite3.Connection, where_col: str) -> list:
@@ -33,6 +35,7 @@ def _run_hash_pool(pending: list, n_workers: int, hash_fn, update_sql: str,
     hashed = 0
     failed = 0
     pending_commit = 0
+    last_sync = time.monotonic()
 
     def _hash_one(args: tuple):
         row_id, path = args
@@ -42,7 +45,8 @@ def _run_hash_pool(pending: list, n_workers: int, hash_fn, update_sql: str,
         except Exception as e:
             return row_id, None, f"{type(e).__name__}: {e}"
 
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+    pool = ThreadPoolExecutor(max_workers=n_workers)
+    try:
         futures_map = {pool.submit(_hash_one, item): item for item in pending}
         with tqdm(total=len(pending), desc=label, unit="img") as bar:
             for future in as_completed(futures_map):
@@ -54,13 +58,24 @@ def _run_hash_pool(pending: list, n_workers: int, hash_fn, update_sql: str,
                     if pending_commit >= _COMMIT_BATCH:
                         conn.commit()
                         pending_commit = 0
+                        now = time.monotonic()
+                        if now - last_sync >= _SYNC_INTERVAL_SEC and hasattr(conn, "sync_checkpoint"):
+                            conn.sync_checkpoint()
+                            last_sync = now
                 else:
                     tqdm.write(f"  Hash failed: {futures_map[future][1]} — {err}")
                     failed += 1
                 bar.update(1)
-
-    if pending_commit:
-        conn.commit()
+        pool.shutdown(wait=True)
+    except BaseException:
+        # Cancel pending futures so we stop quickly; wait only for already-running workers.
+        pool.shutdown(wait=True, cancel_futures=True)
+        if pending_commit:
+            conn.commit()
+        raise
+    else:
+        if pending_commit:
+            conn.commit()
     return hashed, failed
 
 
@@ -239,7 +254,13 @@ def download_cloud_photos(
 
 def main() -> None:
     import argparse
+    import signal
+    import sys
     from .db import connect, init_db
+
+    # SIGTERM (sent by the GUI's Stop button) must run finally blocks so the
+    # local DB cache is synced back to the external drive before we exit.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
 
     parser = argparse.ArgumentParser(description="Compute perceptual hashes for a catalog.")
     parser.add_argument("--db", required=True, help="Path to the SQLite catalog database file.")

@@ -13,6 +13,7 @@ Options:
     --download-limit   Max photos to download per run (useful for batching large libraries).
 """
 import argparse
+import signal
 import sys
 from pathlib import Path
 
@@ -21,6 +22,10 @@ from .sources import mac_photos, lightroom, folder
 
 
 def main() -> None:
+    # SIGTERM (sent by the GUI's Stop button) must run finally blocks so the
+    # local DB cache is synced back to the external drive before we exit.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
+
     parser = argparse.ArgumentParser(
         description="Build or update the photo catalog SQLite database."
     )

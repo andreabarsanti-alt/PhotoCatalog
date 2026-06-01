@@ -10,6 +10,7 @@ strongest match. Re-running clears and rewrites only the chosen strategy's rows.
 """
 import argparse
 import json
+import signal
 import sqlite3
 import sys
 from collections import defaultdict
@@ -474,6 +475,10 @@ def _print_summary(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # SIGTERM (sent by the GUI's Stop button) must run finally blocks so the
+    # local DB cache is synced back to the external drive before we exit.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
+
     parser = argparse.ArgumentParser(
         description="Find duplicate photos and store results in duplicate_groups."
     )

@@ -165,16 +165,37 @@ def cache_db_locally(db_path: str) -> str:
     Copy a DB from an external drive to ~/Library/Caches/PhotoCatalog/ and
     return the local cache path.  Checkpoints the WAL first so the copy is
     self-contained.  If the path is already local, returns db_path unchanged.
+
+    If a local cache already exists and is newer than the external copy (e.g.
+    because a previous run was killed before sync-back), the local cache is
+    reused and a warning is printed rather than overwriting uncommitted work.
     """
     if not is_external_path(db_path):
         return db_path
     cache_dir = Path.home() / "Library" / "Caches" / "PhotoCatalog"
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_path = str(cache_dir / Path(db_path).name)
+
+    # If the local cache is newer the external was never synced back — reuse it.
+    if Path(cache_path).exists():
+        local_mtime    = Path(cache_path).stat().st_mtime
+        external_mtime = Path(db_path).stat().st_mtime
+        if local_mtime > external_mtime + 2:   # 2-second grace for filesystem clock skew
+            print(
+                f"WARNING: local cache is newer than {Path(db_path).name} on the external drive.\n"
+                f"  Using local cache (a previous run may not have synced back).\n"
+                f"  Delete {cache_path} to force a fresh copy from the drive."
+            )
+            return cache_path
+
     print(f"External drive detected — caching {Path(db_path).name} locally…")
     _src = sqlite3.connect(db_path)
-    _src.execute("PRAGMA wal_checkpoint(FULL)")
-    _src.close()
+    try:
+        _src.execute("PRAGMA wal_checkpoint(FULL)")
+    except Exception:
+        pass  # proceed with copy even if checkpoint fails; SQLite will recover
+    finally:
+        _src.close()
     shutil.copy2(db_path, cache_path)
     return cache_path
 
@@ -205,6 +226,14 @@ class _CachedConnection:
         except Exception:
             pass
         self._conn.close()
+        sync_db_back(self._cache_path, self._original_path)
+
+    def sync_checkpoint(self) -> None:
+        """WAL checkpoint + copy to external drive without closing. Safe to call mid-operation."""
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(FULL)")
+        except Exception:
+            pass
         sync_db_back(self._cache_path, self._original_path)
 
     def __getattr__(self, name):
