@@ -1265,15 +1265,33 @@ class PhotoCatalogApp(tk.Tk):
         self._dl_progress.config(text=f"Downloading {fname}…")
 
         def download():
-            def _progress(block_num, block_size, total_size):
-                if total_size > 0:
-                    pct = min(100, block_num * block_size * 100 // total_size)
-                    self.after(0, lambda p=pct: self._dl_progress.config(
-                        text=f"Downloading {fname}…  {p}%"
-                    ))
-
             try:
-                urllib.request.urlretrieve(self._update_asset_url, dest, _progress)
+                import ssl
+                try:
+                    import certifi
+                    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+                except ImportError:
+                    ssl_ctx = ssl.create_default_context()
+
+                req = urllib.request.Request(
+                    self._update_asset_url,
+                    headers={"User-Agent": f"PhotoCatalog/{__version__}"},
+                )
+                with urllib.request.urlopen(req, context=ssl_ctx) as resp:
+                    total = int(resp.headers.get("Content-Length", 0))
+                    downloaded = 0
+                    with open(dest, "wb") as f:
+                        while True:
+                            chunk = resp.read(65536)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total > 0:
+                                pct = min(100, downloaded * 100 // total)
+                                self.after(0, lambda p=pct: self._dl_progress.config(
+                                    text=f"Downloading {fname}…  {p}%"
+                                ))
                 self.after(0, lambda: self._install_dmg(dest))
             except Exception as e:
                 self.after(0, lambda: (
