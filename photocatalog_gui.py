@@ -1165,12 +1165,18 @@ class PhotoCatalogApp(tk.Tk):
     def _fetch_latest_release(self):
         """Background thread: fetch latest release from GitHub API."""
         try:
+            import ssl
+            try:
+                import certifi
+                ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+            except ImportError:
+                ssl_ctx = ssl.create_default_context()
             req = urllib.request.Request(
                 RELEASES_API,
                 headers={"Accept": "application/vnd.github+json",
                          "User-Agent": f"PhotoCatalog/{__version__}"},
             )
-            with urllib.request.urlopen(req, timeout=8) as r:
+            with urllib.request.urlopen(req, timeout=8, context=ssl_ctx) as r:
                 data = json.loads(r.read())
 
             tag = data.get("tag_name", "").lstrip("v")
@@ -1182,7 +1188,7 @@ class PhotoCatalogApp(tk.Tk):
             self._update_asset_url = dmg_asset["browser_download_url"] if dmg_asset else None
             self.after(0, self._refresh_update_ui)
         except Exception as e:
-            msg = f"Could not check for updates ({type(e).__name__})"
+            msg = f"Could not check for updates: {e}"
             self.after(0, lambda: self._update_status.config(text=msg))
 
     def _check_updates_manual(self):
