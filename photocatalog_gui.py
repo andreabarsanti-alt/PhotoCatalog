@@ -124,6 +124,8 @@ class PhotoCatalogApp(tk.Tk):
         self._build_output()
         self._poll_output()
 
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
         # Silently check for updates in background
         threading.Thread(target=self._fetch_latest_release, daemon=True).start()
 
@@ -1265,38 +1267,26 @@ class PhotoCatalogApp(tk.Tk):
         self._dl_progress.config(text=f"Downloading {fname}…")
 
         def download():
-            try:
-                import ssl
-                try:
-                    import certifi
-                    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-                except ImportError:
-                    ssl_ctx = ssl.create_default_context()
+            def _progress(block_num, block_size, total_size):
+                done = block_num * block_size
+                if total_size > 0:
+                    pct = min(100, done * 100 // total_size)
+                    txt = f"Downloading {fname}…  {pct}%"
+                elif done > 0:
+                    txt = f"Downloading {fname}…  {done // 1_048_576} MB"
+                else:
+                    return
+                self.after(0, lambda t=txt: self._dl_progress.config(text=t))
 
-                req = urllib.request.Request(
-                    self._update_asset_url,
-                    headers={"User-Agent": f"PhotoCatalog/{__version__}"},
-                )
-                with urllib.request.urlopen(req, context=ssl_ctx) as resp:
-                    total = int(resp.headers.get("Content-Length", 0))
-                    downloaded = 0
-                    with open(dest, "wb") as f:
-                        while True:
-                            chunk = resp.read(65536)
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if total > 0:
-                                pct = min(100, downloaded * 100 // total)
-                                self.after(0, lambda p=pct: self._dl_progress.config(
-                                    text=f"Downloading {fname}…  {p}%"
-                                ))
+            try:
+                urllib.request.urlretrieve(self._update_asset_url, dest, _progress)
                 self.after(0, lambda: self._install_dmg(dest))
             except Exception as e:
+                err = str(e)
                 self.after(0, lambda: (
-                    self._dl_progress.config(text=f"Download failed: {e}"),
+                    self._dl_progress.config(text=f"Download failed: {err}"),
                     self._dl_btn.config(state="normal"),
+                    messagebox.showerror("Download failed", err),
                 ))
 
         threading.Thread(target=download, daemon=True).start()
@@ -1354,6 +1344,12 @@ class PhotoCatalogApp(tk.Tk):
                 f"Automatic install failed:\n{e}\n\n"
                 "The DMG has been opened. Drag PhotoCatalog to /Applications manually.",
             )
+
+    def _on_close(self):
+        # Force-exit so blocked download/subprocess threads don't keep the
+        # process alive as a zombie that macOS brings to front on next launch.
+        import os as _os
+        _os._exit(0)
 
     def _relaunch(self, app_path: str):
         subprocess.Popen(["open", "-n", app_path])
