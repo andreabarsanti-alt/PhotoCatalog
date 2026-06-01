@@ -13,7 +13,6 @@ import argparse
 import io
 import json
 import mimetypes
-import shutil
 import sys
 import threading
 import urllib.parse
@@ -21,7 +20,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .db import connect, ensure_decisions_table
+from .db import connect, ensure_decisions_table, is_external_path, cache_db_locally, sync_db_back
 
 # ---------------------------------------------------------------------------
 # Globals set at startup
@@ -1362,11 +1361,6 @@ function enc(s) { return encodeURIComponent(s); }
 # CLI entry point
 # ---------------------------------------------------------------------------
 
-def _is_external(path: str) -> bool:
-    """True if the path lives on a mounted external volume (under /Volumes/)."""
-    return Path(path).resolve().parts[:2] == ('/', 'Volumes')
-
-
 def main() -> None:
     global _DB_PATH
     parser = argparse.ArgumentParser(
@@ -1377,24 +1371,12 @@ def main() -> None:
     args = parser.parse_args()
 
     original_db = args.db
-    cache_db: str | None = None
 
-    if _is_external(original_db):
-        cache_dir = Path.home() / "Library" / "Caches" / "PhotoCatalog"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_db = str(cache_dir / Path(original_db).name)
-        print("External drive detected — copying catalog to local cache…")
-        # Checkpoint WAL so all committed data is in the main .db file before copying
-        import sqlite3 as _sqlite3
-        _c = _sqlite3.connect(original_db)
-        _c.execute("PRAGMA wal_checkpoint(FULL)")
-        _c.close()
-        shutil.copy2(original_db, cache_db)
-        print(f"Cached at {cache_db}")
-        _DB_PATH = cache_db
-    else:
-        _DB_PATH = original_db
-
+    # For serve_duplicates, cache the DB once at startup and point all per-request
+    # _conn() calls at the local copy.  sync_db_back() is called at clean shutdown.
+    # (connect() is not used here because it wraps per-connection — too expensive
+    #  to copy the whole DB back on every HTTP request.)
+    _DB_PATH = cache_db_locally(original_db)
     ensure_decisions_table(_conn())
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), _Handler)
@@ -1407,14 +1389,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\nStopped.")
     finally:
-        if cache_db:
-            print("Syncing changes back to external drive…")
-            import sqlite3 as _sqlite3
-            _c = _sqlite3.connect(cache_db)
-            _c.execute("PRAGMA wal_checkpoint(FULL)")
-            _c.close()
-            shutil.copy2(cache_db, original_db)
-            print("Done.")
+        if _DB_PATH != original_db:
+            sync_db_back(_DB_PATH, original_db)
 
 
 if __name__ == "__main__":
