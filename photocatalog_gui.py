@@ -1346,8 +1346,16 @@ class PhotoCatalogApp(tk.Tk):
             )
 
     def _on_close(self):
-        # Force-exit so blocked download/subprocess threads don't keep the
-        # process alive as a zombie that macOS brings to front on next launch.
+        # Terminate any running subprocess (e.g. serve-duplicates) before exiting.
+        # terminate() sends SIGTERM, which triggers sync_db_back via our signal handler.
+        # We wait briefly so the DB sync can finish; force-kill after 5 s if stuck.
+        if self._proc and self._proc.poll() is None:
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+        # Force-exit so any remaining daemon threads don't keep the process alive.
         import os as _os
         _os._exit(0)
 
@@ -1388,6 +1396,10 @@ class PhotoCatalogApp(tk.Tk):
     def _stop(self):
         if self._proc and self._proc.poll() is None:
             self._proc.terminate()
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
             self._status.config(text="Stopped")
 
     def _append(self, text: str):
@@ -1419,6 +1431,10 @@ class PhotoCatalogApp(tk.Tk):
             ):
                 return
             self._proc.terminate()
+            try:
+                self._proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
 
         self._record_catalog_used(self.db_path.get().strip())
         self._clear()

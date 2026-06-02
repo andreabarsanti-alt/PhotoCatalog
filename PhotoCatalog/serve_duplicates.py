@@ -13,6 +13,7 @@ import argparse
 import io
 import json
 import mimetypes
+import signal
 import sys
 import threading
 import urllib.parse
@@ -1375,6 +1376,11 @@ def main() -> None:
     #  to copy the whole DB back on every HTTP request.)
     _DB_PATH = cache_db_locally(original_db)
     ensure_decisions_table(_conn())
+
+    # SIGTERM (sent by the GUI's Stop button) must trigger the finally block so
+    # sync_db_back() runs.  Raising SystemExit propagates through finally; the
+    # default SIGTERM handler would kill the process without any cleanup.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), _Handler)
     url = f"http://127.0.0.1:{args.port}"
