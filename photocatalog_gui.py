@@ -982,6 +982,7 @@ class PhotoCatalogApp(tk.Tk):
         def worker():
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
+            total = len(rows)
             moved, failed = 0, 0
             ids_done: list[int] = []
 
@@ -1011,6 +1012,8 @@ class PhotoCatalogApp(tk.Tk):
                     ids_done.append(r["id"])
                     moved += 1
                     self._output_q.put(f"  {src.name}  →  {dst.relative_to(dest_path)}\n")
+                    self.after(0, lambda n=moved, t=total: self._status.config(
+                        text=f"Moving {n} / {t}…"))
                 except Exception as e:
                     self._output_q.put(f"  Failed: {src.name} — {e}\n")
                     failed += 1
@@ -1055,6 +1058,7 @@ class PhotoCatalogApp(tk.Tk):
             except Exception:
                 album = library.create_album(album_name)
 
+            total = len(rows)
             added, failed_uuids = 0, 0
             ids_done: list[int] = []
 
@@ -1070,6 +1074,8 @@ class PhotoCatalogApp(tk.Tk):
                         ids_done.append(r["id"])
                         added += 1
                         self._output_q.put(f"  → album: {r['original_filename'] or r['file_name'] or uuid}\n")
+                        self.after(0, lambda n=added, t=total: self._status.config(
+                            text=f"Adding to album {n} / {t}…"))
                     else:
                         self._output_q.put(f"  Not found in Photos: {uuid}\n")
                         failed_uuids += 1
@@ -1111,6 +1117,7 @@ class PhotoCatalogApp(tk.Tk):
             for r in rows:
                 by_cat[r["source_catalog"] or ""].append(r)
 
+            total_photos = len(rows)
             total_added, total_skipped = 0, []
             for lrcat_path, cat_rows in by_cat.items():
                 if not lrcat_path or not Path(lrcat_path).exists():
@@ -1126,6 +1133,8 @@ class PhotoCatalogApp(tk.Tk):
                     self._output_q.put(f"  {Path(lrcat_path).name}: {added} marked, {len(skipped)} not found\n")
                     total_added += added
                     total_skipped.extend(skipped)
+                    self.after(0, lambda n=total_added, t=total_photos: self._status.config(
+                        text=f"Marking {n} / {t}…"))
                     # Remove successfully marked photos from catalog
                     cat_ids = [r["id"] for r in cat_rows if r["source_file"] not in skipped]
                     if cat_ids:
