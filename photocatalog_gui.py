@@ -116,6 +116,7 @@ class PhotoCatalogApp(tk.Tk):
 
         self._output_q: queue.Queue[str | None] = queue.Queue()
         self._proc: subprocess.Popen | None = None
+        self._cancel = threading.Event()
         self._latest_version: str | None = None
         self._update_asset_url: str | None = None
 
@@ -744,6 +745,9 @@ class PhotoCatalogApp(tk.Tk):
             copied = skipped = failed = 0
 
             for i, r in enumerate(rows):
+                if self._cancel.is_set():
+                    self._output_q.put("  Cancelled.\n")
+                    break
                 src_str = r["source_file"] or ""
 
                 # Skip iCloud-only photos
@@ -986,6 +990,9 @@ class PhotoCatalogApp(tk.Tk):
             moved, failed, missing = 0, 0, 0
 
             for r in rows:
+                if self._cancel.is_set():
+                    self._output_q.put("  Cancelled.\n")
+                    break
                 src  = Path(r["source_file"])
                 name = r["original_filename"] or r["file_name"] or src.name
                 if not src.exists():
@@ -1066,6 +1073,9 @@ class PhotoCatalogApp(tk.Tk):
             # (one photos() lookup + one album.add()) instead of 2 per photo.
             BATCH = 500
             for batch_start in range(0, total, BATCH):
+                if self._cancel.is_set():
+                    self._output_q.put("  Cancelled.\n")
+                    break
                 batch = rows[batch_start : batch_start + BATCH]
                 by_uuid = {r["mp_uuid"]: r for r in batch if r["mp_uuid"]}
                 no_uuid = [r for r in batch if not r["mp_uuid"]]
@@ -1135,6 +1145,9 @@ class PhotoCatalogApp(tk.Tk):
             total_photos = len(rows)
             total_added, total_skipped = 0, []
             for lrcat_path, cat_rows in by_cat.items():
+                if self._cancel.is_set():
+                    self._output_q.put("  Cancelled.\n")
+                    break
                 if not lrcat_path or not Path(lrcat_path).exists():
                     self._output_q.put(f"  Catalog not found: {lrcat_path or '(unknown)'}\n")
                     total_skipped.extend(r["source_file"] for r in cat_rows)
@@ -1438,15 +1451,17 @@ class PhotoCatalogApp(tk.Tk):
         self._log.config(state="normal")
         self._log.delete("1.0", "end")
         self._log.config(state="disabled")
+        self._cancel.clear()
 
     def _stop(self):
+        self._cancel.set()
         if self._proc and self._proc.poll() is None:
             self._proc.terminate()
             try:
                 self._proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self._proc.kill()
-            self._status.config(text="Stopped")
+        self._status.config(text="Stopping…")
 
     def _append(self, text: str):
         self._log.config(state="normal")
@@ -1459,8 +1474,11 @@ class PhotoCatalogApp(tk.Tk):
             while True:
                 item = self._output_q.get_nowait()
                 if item is None:
-                    rc = self._proc.returncode if self._proc else 0
-                    self._status.config(text=f"Done  (exit {rc})" if rc else "Done")
+                    if self._cancel.is_set():
+                        self._status.config(text="Stopped")
+                    else:
+                        rc = self._proc.returncode if self._proc else 0
+                        self._status.config(text=f"Done  (exit {rc})" if rc else "Done")
                 else:
                     self._append(item)
         except queue.Empty:
