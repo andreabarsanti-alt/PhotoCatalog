@@ -79,6 +79,8 @@ a = Analysis(
         "exifread",
         "exifread.tags",
         "exifread.tags.makernote",
+        # SSL certificates for in-app update download
+        "certifi",
     ],
     hookspath=[],
     hooksconfig={},
@@ -113,6 +115,7 @@ b = Analysis(
         "exifread",
         "exifread.tags",
         "exifread.tags.makernote",
+        "certifi",
     ],
     hookspath=[],
     hooksconfig={},

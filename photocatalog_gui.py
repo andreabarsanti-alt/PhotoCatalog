@@ -1267,19 +1267,34 @@ class PhotoCatalogApp(tk.Tk):
         self._dl_progress.config(text=f"Downloading {fname}…")
 
         def download():
-            def _progress(block_num, block_size, total_size):
-                done = block_num * block_size
-                if total_size > 0:
-                    pct = min(100, done * 100 // total_size)
-                    txt = f"Downloading {fname}…  {pct}%"
-                elif done > 0:
-                    txt = f"Downloading {fname}…  {done // 1_048_576} MB"
-                else:
-                    return
-                self.after(0, lambda t=txt: self._dl_progress.config(text=t))
-
             try:
-                urllib.request.urlretrieve(self._update_asset_url, dest, _progress)
+                import ssl
+                try:
+                    import certifi
+                    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+                except ImportError:
+                    ssl_ctx = ssl.create_default_context()
+
+                req = urllib.request.Request(
+                    self._update_asset_url,
+                    headers={"User-Agent": f"PhotoCatalog/{__version__}"},
+                )
+                with urllib.request.urlopen(req, context=ssl_ctx) as resp:
+                    total = int(resp.headers.get("Content-Length", 0))
+                    downloaded = 0
+                    with open(dest, "wb") as f:
+                        while True:
+                            chunk = resp.read(65536)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total > 0:
+                                pct = min(100, downloaded * 100 // total)
+                                txt = f"Downloading {fname}…  {pct}%"
+                            else:
+                                txt = f"Downloading {fname}…  {downloaded // 1_048_576} MB"
+                            self.after(0, lambda t=txt: self._dl_progress.config(text=t))
                 self.after(0, lambda: self._install_dmg(dest))
             except Exception as e:
                 err = str(e)
