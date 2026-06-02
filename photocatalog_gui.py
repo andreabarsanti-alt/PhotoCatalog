@@ -1011,7 +1011,9 @@ class PhotoCatalogApp(tk.Tk):
                     shutil.move(str(src), str(dst))
                     self._db_delete(conn, [r["id"]])   # remove immediately — safe to stop
                     moved += 1
-                    self._output_q.put(f"  {src.name}  →  {dst.relative_to(dest_path)}\n")
+                    # Log every file for small batches; throttle to every 50 for large ones
+                    if total <= 200 or moved % 50 == 0:
+                        self._output_q.put(f"  {moved}/{total}  {src.name}  →  {dst.relative_to(dest_path)}\n")
                     self.after(0, lambda n=moved, t=total: self._status.config(
                         text=f"Moving {n} / {t}…"))
                 except Exception as e:

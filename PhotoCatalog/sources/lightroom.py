@@ -72,20 +72,25 @@ WHERE rf.absolutePath IS NOT NULL
 
 
 def _lr_find_image_ids(lr_conn: sqlite3.Connection, source_files: list[str]) -> dict[str, int]:
-    """Return {source_file: id_local} for photos found in the Lightroom catalog."""
-    result = {}
-    for sf in source_files:
-        row = lr_conn.execute("""
-            SELECT i.id_local
-            FROM   Adobe_images i
-            JOIN   AgLibraryFile lf ON i.rootFile   = lf.id_local
-            JOIN   AgLibraryFolder f ON lf.folder    = f.id_local
-            JOIN   AgLibraryRootFolder rf ON f.rootFolder = rf.id_local
-            WHERE  rf.absolutePath || f.pathFromRoot || lf.baseName || '.' || lf.extension = ?
-        """, (sf,)).fetchone()
-        if row:
-            result[sf] = row["id_local"]
-    return result
+    """Return {source_file: id_local} for photos found in the Lightroom catalog.
+
+    Uses a temp table + single join instead of one query per file.
+    """
+    if not source_files:
+        return {}
+    lr_conn.execute("CREATE TEMP TABLE IF NOT EXISTS _pc_paths (path TEXT PRIMARY KEY)")
+    lr_conn.execute("DELETE FROM _pc_paths")
+    lr_conn.executemany("INSERT OR IGNORE INTO _pc_paths VALUES (?)", [(sf,) for sf in source_files])
+    rows = lr_conn.execute("""
+        SELECT rf.absolutePath || f.pathFromRoot || lf.baseName || '.' || lf.extension AS source_file,
+               i.id_local
+        FROM   Adobe_images i
+        JOIN   AgLibraryFile lf        ON i.rootFile    = lf.id_local
+        JOIN   AgLibraryFolder f       ON lf.folder     = f.id_local
+        JOIN   AgLibraryRootFolder rf  ON f.rootFolder  = rf.id_local
+        JOIN   _pc_paths tp            ON tp.path = rf.absolutePath || f.pathFromRoot || lf.baseName || '.' || lf.extension
+    """).fetchall()
+    return {row["source_file"]: row["id_local"] for row in rows}
 
 
 def add_to_collection(lrcat_path: str, source_files: list[str],
@@ -121,22 +126,31 @@ def add_to_collection(lrcat_path: str, source_files: list[str],
 
         img_ids = _lr_find_image_ids(lr_conn, source_files)
         skipped = [sf for sf in source_files if sf not in img_ids]
-        added = 0
-        for sf, img_id in img_ids.items():
-            exists = lr_conn.execute(
-                "SELECT 1 FROM AgLibraryCollectionImage WHERE collection = ? AND image = ?",
-                (col_id, img_id),
-            ).fetchone()
-            if not exists:
-                max_pos = lr_conn.execute(
-                    "SELECT COALESCE(MAX(positionInCollection), 0) FROM AgLibraryCollectionImage WHERE collection = ?",
-                    (col_id,),
-                ).fetchone()[0]
-                lr_conn.execute(
-                    "INSERT INTO AgLibraryCollectionImage (collection, image, pick, positionInCollection) VALUES (?, ?, 0, ?)",
-                    (col_id, img_id, max_pos + 1),
-                )
-                added += 1
+
+        img_id_list = list(img_ids.values())
+        # Single query to find which images are already in the collection
+        already_in: set[int] = set()
+        for i in range(0, len(img_id_list), 900):
+            chunk = img_id_list[i:i + 900]
+            ph = ",".join("?" * len(chunk))
+            for row in lr_conn.execute(
+                f"SELECT image FROM AgLibraryCollectionImage WHERE collection = ? AND image IN ({ph})",
+                [col_id] + chunk,
+            ):
+                already_in.add(row[0])
+
+        to_add = [img_id for img_id in img_id_list if img_id not in already_in]
+        if to_add:
+            max_pos = lr_conn.execute(
+                "SELECT COALESCE(MAX(positionInCollection), 0) FROM AgLibraryCollectionImage WHERE collection = ?",
+                (col_id,),
+            ).fetchone()[0]
+            lr_conn.executemany(
+                "INSERT INTO AgLibraryCollectionImage (collection, image, pick, positionInCollection) VALUES (?, ?, 0, ?)",
+                [(col_id, img_id, pos) for img_id, pos in
+                 zip(to_add, range(max_pos + 1, max_pos + 1 + len(to_add)))],
+            )
+        added = len(to_add)
         lr_conn.execute(
             "UPDATE AgLibraryCollection SET imageCount = (SELECT COUNT(*) FROM AgLibraryCollectionImage WHERE collection = ?) WHERE id_local = ?",
             (col_id, col_id),
@@ -185,25 +199,28 @@ def add_keyword(lrcat_path: str, source_files: list[str],
 
         img_ids = _lr_find_image_ids(lr_conn, source_files)
         skipped = [sf for sf in source_files if sf not in img_ids]
-        added = 0
-        for sf, img_id in img_ids.items():
-            exists = lr_conn.execute(
-                "SELECT 1 FROM AgLibraryKeywordImage WHERE image = ? AND tag = ?",
-                (img_id, kw_id),
-            ).fetchone()
-            if not exists:
-                lr_conn.execute(
-                    "INSERT INTO AgLibraryKeywordImage (image, tag) VALUES (?, ?)",
-                    (img_id, kw_id),
-                )
-                added += 1
-        if added:
+
+        img_id_list = list(img_ids.values())
+        # Single query to find which images already have this keyword
+        already_tagged: set[int] = set()
+        for i in range(0, len(img_id_list), 900):
+            chunk = img_id_list[i:i + 900]
+            ph = ",".join("?" * len(chunk))
+            for row in lr_conn.execute(
+                f"SELECT image FROM AgLibraryKeywordImage WHERE tag = ? AND image IN ({ph})",
+                [kw_id] + chunk,
+            ):
+                already_tagged.add(row[0])
+
+        to_add = [(img_id, kw_id) for img_id in img_id_list if img_id not in already_tagged]
+        if to_add:
+            lr_conn.executemany("INSERT INTO AgLibraryKeywordImage (image, tag) VALUES (?, ?)", to_add)
             lr_conn.execute(
                 "UPDATE AgLibraryKeyword SET imageCount = COALESCE(imageCount, 0) + ? WHERE id_local = ?",
-                (added, kw_id),
+                (len(to_add), kw_id),
             )
         lr_conn.commit()
-        return added, skipped
+        return len(to_add), skipped
     finally:
         lr_conn.close()
 
