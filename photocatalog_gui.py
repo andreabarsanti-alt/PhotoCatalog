@@ -720,7 +720,8 @@ class PhotoCatalogApp(tk.Tk):
             if scope == "keep":
                 rows = conn.execute("""
                     SELECT p.id, p.source_file, p.source_type,
-                           p.file_name, p.original_filename, p.date_original
+                           p.file_name, p.original_filename, p.date_original,
+                           p.mp_is_live
                     FROM   photos p
                     JOIN   decisions d ON d.photo_id = p.id
                     WHERE  d.action = 'keep'
@@ -729,7 +730,8 @@ class PhotoCatalogApp(tk.Tk):
             else:
                 rows = conn.execute("""
                     SELECT p.id, p.source_file, p.source_type,
-                           p.file_name, p.original_filename, p.date_original
+                           p.file_name, p.original_filename, p.date_original,
+                           p.mp_is_live
                     FROM   photos p
                     WHERE  p.id NOT IN (
                         SELECT photo_id FROM decisions WHERE action = 'discard'
@@ -780,6 +782,11 @@ class PhotoCatalogApp(tk.Tk):
                 try:
                     shutil.copy2(str(src), str(dst))
                     copied += 1
+                    # Live Photo: copy companion .MOV so the pair re-imports correctly
+                    if r["mp_is_live"]:
+                        mov_src = src.with_suffix(".MOV")
+                        if mov_src.exists():
+                            shutil.copy2(str(mov_src), str(folder / mov_src.name))
                     if copied % 100 == 0:
                         self._output_q.put(f"  {copied}/{len(rows)} copied…\n")
                 except Exception as e:
