@@ -1059,30 +1059,46 @@ class PhotoCatalogApp(tk.Tk):
 
             total = len(rows)
             added, failed_uuids = 0, 0
-            ids_done: list[int] = []
 
-            for r in rows:
-                uuid = r["mp_uuid"]
-                if not uuid:
+            # Batch into chunks of 500 — each chunk is 2 AppleScript calls
+            # (one photos() lookup + one album.add()) instead of 2 per photo.
+            BATCH = 500
+            for batch_start in range(0, total, BATCH):
+                batch = rows[batch_start : batch_start + BATCH]
+                by_uuid = {r["mp_uuid"]: r for r in batch if r["mp_uuid"]}
+                no_uuid = [r for r in batch if not r["mp_uuid"]]
+                for r in no_uuid:
                     self._output_q.put(f"  No UUID — skipping: {r['original_filename'] or r['file_name']}\n")
+
+                if not by_uuid:
                     continue
                 try:
-                    photos = library.photos(uuid=[uuid])
-                    if photos:
-                        album.add(photos)
-                        added += 1
-                        self._output_q.put(f"  → album: {r['original_filename'] or r['file_name'] or uuid}\n")
-                        self.after(0, lambda n=added, t=total: self._status.config(
-                            text=f"Adding to album {n} / {t}…"))
+                    found = library.photos(uuid=list(by_uuid.keys()))
+                    if found:
+                        album.add(found)
+                        # Build a set of UUIDs actually returned by Photos
+                        found_uuids = {p.uuid for p in found}
+                        ids_done = []
+                        for uuid, r in by_uuid.items():
+                            if uuid in found_uuids:
+                                added += 1
+                                ids_done.append(r["id"])
+                            else:
+                                self._output_q.put(f"  Not found in Photos: {uuid}\n")
+                                failed_uuids += 1
                         conn = sqlite3.connect(db_path)
-                        self._db_delete(conn, [r["id"]])  # remove immediately — safe to stop
+                        self._db_delete(conn, ids_done)
                         conn.close()
                     else:
-                        self._output_q.put(f"  Not found in Photos: {uuid}\n")
-                        failed_uuids += 1
+                        failed_uuids += len(by_uuid)
+                        for uuid in by_uuid:
+                            self._output_q.put(f"  Not found in Photos: {uuid}\n")
+                    self._output_q.put(f"  {added} / {total} added…\n")
+                    self.after(0, lambda n=added, t=total: self._status.config(
+                        text=f"Adding to album {n} / {t}…"))
                 except Exception as e:
-                    self._output_q.put(f"  Failed {uuid}: {e}\n")
-                    failed_uuids += 1
+                    self._output_q.put(f"  Batch failed ({batch_start}–{batch_start+len(batch)}): {e}\n")
+                    failed_uuids += len(by_uuid)
             self._output_q.put(f"\nDone — added {added} to '{album_name}'")
             if failed_uuids:
                 self._output_q.put(f", {failed_uuids} not found in Photos")
