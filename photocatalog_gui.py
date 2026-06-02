@@ -60,7 +60,6 @@ import queue
 import shutil
 import sqlite3
 import subprocess
-import tempfile
 import threading
 import urllib.request
 import webbrowser
@@ -1060,117 +1059,76 @@ class PhotoCatalogApp(tk.Tk):
         self._append(f"Adding {len(rows)} MacPhotos discards to album '{album_name}'…\n\n")
 
         def worker():
-            album_esc = album_name.replace("\\", "\\\\").replace('"', '\\"')
+            import photoscript
 
-            def run_as(script: str, timeout: int = 30) -> str:
-                """Run AppleScript via osascript subprocess. Raises RuntimeError or TimeoutExpired."""
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".applescript", delete=False) as f:
-                    f.write(script)
-                    fname = f.name
-                try:
-                    r = subprocess.run(
-                        ["osascript", fname], capture_output=True, text=True, timeout=timeout,
-                    )
-                    if r.returncode != 0:
-                        raise RuntimeError(r.stderr.strip() or f"osascript exit {r.returncode}")
-                    return r.stdout.strip()
-                finally:
-                    try:
-                        os.unlink(fname)
-                    except OSError:
-                        pass
-
-            # 1. Check Photos is running (subprocess triggers Automation TCC prompt correctly)
+            # 1. Check Photos is running (triggers Automation TCC prompt on first run)
             self._output_q.put("  Checking Photos.app access…\n")
             try:
-                running = run_as(
-                    'tell application "System Events" to return (name of processes) contains "Photos"',
-                    timeout=15,
-                )
-            except subprocess.TimeoutExpired:
-                self._output_q.put("  Error: Photos.app is not responding. Make sure it is fully loaded and try again.\n")
-                self._output_q.put(None)
-                return
-            except RuntimeError as e:
-                self._output_q.put(f"  Error: {e}\n")
-                self._output_q.put(None)
-                return
-            if running.lower() != "true":
-                self._output_q.put("  Error: Photos.app is not running — please open it and try again.\n")
+                if not photoscript.run_script("photosLibraryIsRunning"):
+                    self._output_q.put("  Error: Photos.app is not running — please open it and try again.\n")
+                    self._output_q.put(None)
+                    return
+            except Exception as e:
+                self._output_q.put(f"  Error checking Photos.app: {e}\n")
                 self._output_q.put(None)
                 return
 
             # 2. Find or create album
             self._output_q.put(f"  Setting up album '{album_name}'…\n")
             try:
-                run_as(f'''
-tell application "Photos"
-    if not (exists album "{album_esc}") then
-        make new album named "{album_esc}"
-    end if
-end tell
-''', timeout=30)
+                lib = photoscript.PhotosLibrary()
+                album = lib.album(album_name) or lib.create_album(album_name)
                 self._output_q.put("  Album ready.\n")
-            except subprocess.TimeoutExpired:
-                self._output_q.put("  Error: Photos.app timed out setting up album. Make sure it is fully loaded and try again.\n")
-                self._output_q.put(None)
-                return
-            except RuntimeError as e:
+            except Exception as e:
                 self._output_q.put(f"  Error setting up album: {e}\n")
                 self._output_q.put(None)
                 return
 
+            # 3. Add photos in batches of 10 (photoscript handles retry internally)
             total = len(rows)
-            added, failed_uuids = 0, 0
-            all_ids_done: list[int] = []  # accumulate; delete from DB only after all batches succeed
-            BATCH = 500
+            added, failed_count = 0, 0
+            all_ids_done: list[int] = []
+            BATCH = 10
 
-            for batch_start in range(0, total, BATCH):
+            uuid_rows = [(r["mp_uuid"], r) for r in rows if r["mp_uuid"]]
+            for r in (r for r in rows if not r["mp_uuid"]):
+                self._output_q.put(f"  No UUID — skipping: {r['original_filename'] or r['file_name']}\n")
+
+            for batch_start in range(0, len(uuid_rows), BATCH):
                 if self._cancel.is_set():
                     self._output_q.put("  Cancelled.\n")
                     break
-                batch = rows[batch_start : batch_start + BATCH]
-                by_uuid = {r["mp_uuid"]: r for r in batch if r["mp_uuid"]}
-                for r in (r for r in batch if not r["mp_uuid"]):
-                    self._output_q.put(f"  No UUID — skipping: {r['original_filename'] or r['file_name']}\n")
-                if not by_uuid:
+                batch = uuid_rows[batch_start : batch_start + BATCH]
+
+                photos = []
+                batch_rows: dict[str, dict] = {}
+                for uuid, row in batch:
+                    try:
+                        p = photoscript.Photo(uuid)
+                        photos.append(p)
+                        batch_rows[p._uuid] = row
+                    except ValueError:
+                        self._output_q.put(f"  Not found in Photos: {row['original_filename'] or row['file_name']}\n")
+                        failed_count += 1
+
+                if not photos:
                     continue
 
-                uuid_as_list = ", ".join(f'"{u}"' for u in by_uuid)
-                script = f'''
-tell application "Photos"
-    set targetAlbum to album "{album_esc}"
-    set uuidList to {{{uuid_as_list}}}
-    set foundUUIDs to {{}}
-    repeat with u in uuidList
-        try
-            set thePhoto to media item id (u as string)
-            add {{thePhoto}} to targetAlbum
-            set end of foundUUIDs to (u as string)
-        end try
-    end repeat
-    set AppleScript's text item delimiters to ","
-    return foundUUIDs as string
-end tell
-'''
                 try:
-                    result = run_as(script, timeout=120)
-                    found_uuids = set(result.split(",")) - {""} if result else set()
-                    batch_missing = len(by_uuid) - len(found_uuids)
-                    added += len(found_uuids)
-                    failed_uuids += batch_missing
-                    if batch_missing:
-                        self._output_q.put(f"  {batch_missing} not found in Photos in this batch\n")
-                    all_ids_done.extend(r["id"] for uuid, r in by_uuid.items() if uuid in found_uuids)
+                    added_photos = album.add(photos)
+                    added_uuids = {p._uuid for p in added_photos}
+                    added += len(added_photos)
+                    failed_count += len(photos) - len(added_photos)
+                    all_ids_done.extend(batch_rows[u]["id"] for u in added_uuids if u in batch_rows)
+                except Exception as e:
+                    self._output_q.put(f"  Batch failed: {e}\n")
+                    failed_count += len(photos)
+
+                processed = batch_start + len(batch)
+                if processed % 100 < BATCH or processed >= len(uuid_rows):
                     self._output_q.put(f"  {added} / {total} added…\n")
-                    self.after(0, lambda n=added, t=total: self._status.config(
-                        text=f"Adding to album {n} / {t}…"))
-                except subprocess.TimeoutExpired:
-                    self._output_q.put(f"  Batch timed out ({batch_start}–{batch_start + len(batch)}) — Photos not responding\n")
-                    failed_uuids += len(by_uuid)
-                except RuntimeError as e:
-                    self._output_q.put(f"  Batch failed ({batch_start}–{batch_start + len(batch)}): {e}\n")
-                    failed_uuids += len(by_uuid)
+                self.after(0, lambda n=added, t=total: self._status.config(
+                    text=f"Adding to album {n} / {t}…"))
 
             # Delete from catalog only after all Photos work is done
             if all_ids_done:
@@ -1180,8 +1138,8 @@ end tell
                 conn.close()
 
             self._output_q.put(f"\nDone — added {added} to '{album_name}'")
-            if failed_uuids:
-                self._output_q.put(f", {failed_uuids} not found in Photos")
+            if failed_count:
+                self._output_q.put(f", {failed_count} not found in Photos")
             self._output_q.put("\n")
             self._output_q.put(None)
 
