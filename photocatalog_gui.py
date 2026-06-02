@@ -1122,6 +1122,7 @@ end tell
 
             total = len(rows)
             added, failed_uuids = 0, 0
+            all_ids_done: list[int] = []  # accumulate; delete from DB only after all batches succeed
             BATCH = 500
 
             for batch_start in range(0, total, BATCH):
@@ -1160,11 +1161,7 @@ end tell
                     failed_uuids += batch_missing
                     if batch_missing:
                         self._output_q.put(f"  {batch_missing} not found in Photos in this batch\n")
-                    ids_done = [r["id"] for uuid, r in by_uuid.items() if uuid in found_uuids]
-                    if ids_done:
-                        conn = sqlite3.connect(db_path)
-                        self._db_delete(conn, ids_done)
-                        conn.close()
+                    all_ids_done.extend(r["id"] for uuid, r in by_uuid.items() if uuid in found_uuids)
                     self._output_q.put(f"  {added} / {total} added…\n")
                     self.after(0, lambda n=added, t=total: self._status.config(
                         text=f"Adding to album {n} / {t}…"))
@@ -1174,6 +1171,13 @@ end tell
                 except RuntimeError as e:
                     self._output_q.put(f"  Batch failed ({batch_start}–{batch_start + len(batch)}): {e}\n")
                     failed_uuids += len(by_uuid)
+
+            # Delete from catalog only after all Photos work is done
+            if all_ids_done:
+                self._output_q.put(f"  Updating catalog ({len(all_ids_done)} entries)…\n")
+                conn = sqlite3.connect(db_path)
+                self._db_delete(conn, all_ids_done)
+                conn.close()
 
             self._output_q.put(f"\nDone — added {added} to '{album_name}'")
             if failed_uuids:
@@ -1208,6 +1212,7 @@ end tell
 
             total_photos = len(rows)
             total_added, total_skipped = 0, []
+            all_ids_done: list[int] = []  # accumulate; delete from DB only after all catalogs done
             for lrcat_path, cat_rows in by_cat.items():
                 if self._cancel.is_set():
                     self._output_q.put("  Cancelled.\n")
@@ -1227,14 +1232,16 @@ end tell
                     total_skipped.extend(skipped)
                     self.after(0, lambda n=total_added, t=total_photos: self._status.config(
                         text=f"Marking {n} / {t}…"))
-                    # Remove successfully marked photos from catalog
-                    cat_ids = [r["id"] for r in cat_rows if r["source_file"] not in skipped]
-                    if cat_ids:
-                        conn = sqlite3.connect(db_path)
-                        self._db_delete(conn, cat_ids)
-                        conn.close()
+                    all_ids_done.extend(r["id"] for r in cat_rows if r["source_file"] not in skipped)
                 except Exception as e:
                     self._output_q.put(f"  Error writing {Path(lrcat_path).name}: {e}\n")
+
+            # Delete from catalog only after all Lightroom work is done
+            if all_ids_done:
+                self._output_q.put(f"  Updating catalog ({len(all_ids_done)} entries)…\n")
+                conn = sqlite3.connect(db_path)
+                self._db_delete(conn, all_ids_done)
+                conn.close()
 
             self._output_q.put(f"\nDone — {total_added} marked as {label} '{name}'")
             if total_skipped:
