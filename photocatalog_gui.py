@@ -983,15 +983,15 @@ class PhotoCatalogApp(tk.Tk):
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
             total = len(rows)
-            moved, failed = 0, 0
-            ids_done: list[int] = []
+            moved, failed, missing = 0, 0, 0
 
             for r in rows:
                 src  = Path(r["source_file"])
                 name = r["original_filename"] or r["file_name"] or src.name
                 if not src.exists():
                     self._output_q.put(f"  Not found on disk — removing from catalog: {name}\n")
-                    ids_done.append(r["id"])
+                    self._db_delete(conn, [r["id"]])
+                    missing += 1
                     continue
                 date_str = (r["date_original"] or "")[:10]
                 if date_str and len(date_str) == 10:
@@ -1009,7 +1009,7 @@ class PhotoCatalogApp(tk.Tk):
                         n += 1
                 try:
                     shutil.move(str(src), str(dst))
-                    ids_done.append(r["id"])
+                    self._db_delete(conn, [r["id"]])   # remove immediately — safe to stop
                     moved += 1
                     self._output_q.put(f"  {src.name}  →  {dst.relative_to(dest_path)}\n")
                     self.after(0, lambda n=moved, t=total: self._status.config(
@@ -1018,13 +1018,12 @@ class PhotoCatalogApp(tk.Tk):
                     self._output_q.put(f"  Failed: {src.name} — {e}\n")
                     failed += 1
 
-            self._db_delete(conn, ids_done)
             conn.close()
             summary = f"\nDone — moved {moved}"
             if failed:
                 summary += f", failed {failed}"
-            if len(ids_done) > moved:
-                summary += f"  ({len(ids_done) - moved} already missing from disk, removed from catalog)"
+            if missing:
+                summary += f"  ({missing} already missing from disk, removed from catalog)"
             self._output_q.put(summary + "\n")
             self._output_q.put(None)
 
@@ -1071,21 +1070,19 @@ class PhotoCatalogApp(tk.Tk):
                     photos = library.photos(uuid=[uuid])
                     if photos:
                         album.add(photos)
-                        ids_done.append(r["id"])
                         added += 1
                         self._output_q.put(f"  → album: {r['original_filename'] or r['file_name'] or uuid}\n")
                         self.after(0, lambda n=added, t=total: self._status.config(
                             text=f"Adding to album {n} / {t}…"))
+                        conn = sqlite3.connect(db_path)
+                        self._db_delete(conn, [r["id"]])  # remove immediately — safe to stop
+                        conn.close()
                     else:
                         self._output_q.put(f"  Not found in Photos: {uuid}\n")
                         failed_uuids += 1
                 except Exception as e:
                     self._output_q.put(f"  Failed {uuid}: {e}\n")
                     failed_uuids += 1
-
-            conn = sqlite3.connect(db_path)
-            self._db_delete(conn, ids_done)
-            conn.close()
             self._output_q.put(f"\nDone — added {added} to '{album_name}'")
             if failed_uuids:
                 self._output_q.put(f", {failed_uuids} not found in Photos")
