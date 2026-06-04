@@ -31,13 +31,16 @@ _BROWSER_EXTS = {"JPG", "JPEG", "PNG", "GIF", "WEBP", "BMP"}  # natively display
 _HEIC_EXTS    = {"HEIC", "HEIF"}
 _RAW_EXTS     = {"DNG", "CR2", "CR3", "NEF", "ARW", "ORF", "RW2", "RAF", "TIFF", "TIF"}
 
+_DB_CONN: "sqlite3.Connection | None" = None
+_DB_WRITE_LOCK = threading.Lock()
+
 
 # ---------------------------------------------------------------------------
 # Data helpers
 # ---------------------------------------------------------------------------
 
 def _conn():
-    return connect(_DB_PATH)
+    return _DB_CONN
 
 
 def _all_groups() -> list[dict]:
@@ -58,7 +61,6 @@ def _all_groups() -> list[dict]:
         GROUP  BY dg.strategy, dg.group_id
         ORDER  BY dg.strategy, dg.group_id
     """).fetchall()
-    db.close()
     result = []
     for r in rows:
         names = list(dict.fromkeys((r["names"] or "").split("||")))[:2]
@@ -193,7 +195,6 @@ def _group_detail(strategy: str, group_id: int) -> dict:
         WHERE  dg.strategy = ? AND dg.group_id = ?
         ORDER  BY p.id
     """, (strategy, group_id)).fetchall()
-    db.close()
 
     photos = [dict(r) for r in rows]
     raw_mi: dict = {}
@@ -229,7 +230,6 @@ def _group_detail(strategy: str, group_id: int) -> dict:
             photo_ids,
         ):
             decisions[row["photo_id"]] = row["action"]
-        db2.close()
 
     return {"match_info": match_info, "photos": photos, "labels": _LABELS, "decisions": decisions}
 
@@ -302,7 +302,6 @@ def _apply_prefer(pattern: str, field: str, allowed: set | None = None,
             discarded += 1
 
     db.commit()
-    db.close()
     return {"ok": True, "discarded": discarded}
 
 
@@ -363,7 +362,6 @@ def _keep_best(metric: str, allowed: set | None = None) -> dict:
                 discarded += 1
 
     db.commit()
-    db.close()
     return {"ok": True, "discarded": discarded}
 
 
@@ -403,7 +401,6 @@ def _keep_has_original_filename(allowed: set | None = None) -> dict:
             discarded += 1
 
     db.commit()
-    db.close()
     return {"ok": True, "discarded": discarded}
 
 
@@ -454,7 +451,6 @@ def _keep_by_filename_length(prefer: str, allowed: set | None = None) -> dict:
                 discarded += 1
 
     db.commit()
-    db.close()
     return {"ok": True, "discarded": discarded}
 
 
@@ -501,7 +497,6 @@ def _keep_by_date(prefer: str, date_field: str, allowed: set | None = None) -> d
                 discarded += 1
 
     db.commit()
-    db.close()
     return {"ok": True, "discarded": discarded}
 
 
@@ -535,7 +530,6 @@ def _keep_unique(allowed: set | None = None) -> dict:
             kept += 1
 
     db.commit()
-    db.close()
     return {"ok": True, "kept": kept}
 
 
@@ -547,7 +541,6 @@ def _decision_stats() -> dict:
         JOIN   photos p ON p.id = d.photo_id
         GROUP  BY d.action
     """).fetchall()
-    db.close()
     stats = {"keep_count": 0, "discard_count": 0, "discard_bytes": 0, "keep_bytes": 0}
     for r in rows:
         if r["action"] == "keep":
@@ -650,10 +643,9 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/reset-decisions":
             try:
-                db = _conn()
-                db.execute("DELETE FROM decisions")
-                db.commit()
-                db.close()
+                with _DB_WRITE_LOCK:
+                    _conn().execute("DELETE FROM decisions")
+                    _conn().commit()
                 self._send(200, b'{"ok":true}', "application/json")
             except Exception as e:
                 self._send(500, str(e).encode(), "text/plain")
@@ -663,18 +655,17 @@ class _Handler(BaseHTTPRequestHandler):
                 payload = json.loads(self.rfile.read(length))
                 photo_id = int(payload["photo_id"])
                 action   = payload.get("action")   # "keep" | "discard" | null
-                db = _conn()
-                if action in ("keep", "discard"):
-                    db.execute("""
-                        INSERT INTO decisions (photo_id, action)
-                        VALUES (?, ?)
-                        ON CONFLICT (photo_id) DO UPDATE
-                            SET action = excluded.action, decided_at = datetime('now')
-                    """, (photo_id, action))
-                else:
-                    db.execute("DELETE FROM decisions WHERE photo_id = ?", (photo_id,))
-                db.commit()
-                db.close()
+                with _DB_WRITE_LOCK:
+                    if action in ("keep", "discard"):
+                        _conn().execute("""
+                            INSERT INTO decisions (photo_id, action)
+                            VALUES (?, ?)
+                            ON CONFLICT (photo_id) DO UPDATE
+                                SET action = excluded.action, decided_at = datetime('now')
+                        """, (photo_id, action))
+                    else:
+                        _conn().execute("DELETE FROM decisions WHERE photo_id = ?", (photo_id,))
+                    _conn().commit()
                 self._send(200, b'{"ok":true}', "application/json")
             except Exception as e:
                 self._send(500, str(e).encode(), "text/plain")
@@ -1367,10 +1358,21 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8765, help="Local port (default: 8765).")
     args = parser.parse_args()
 
-    original_db = args.db
+    global _DB_PATH, _DB_CONN
 
-    _DB_PATH = original_db
-    ensure_decisions_table(_conn())
+    _DB_PATH = args.db
+    # Single persistent connection shared across all HTTP request threads.
+    # check_same_thread=False is safe here: reads are concurrent-read-safe in
+    # WAL mode; writes are serialised by _DB_WRITE_LOCK.
+    import sqlite3 as _sqlite3
+    _DB_CONN = _sqlite3.connect(_DB_PATH, check_same_thread=False)
+    _DB_CONN.row_factory = _sqlite3.Row
+    _DB_CONN.execute("PRAGMA journal_mode=WAL")
+    _DB_CONN.execute("PRAGMA synchronous=NORMAL")
+    _DB_CONN.execute("PRAGMA cache_size=-65536")
+    _DB_CONN.execute("PRAGMA mmap_size=268435456")
+    _DB_CONN.execute("PRAGMA temp_store=MEMORY")
+    ensure_decisions_table(_DB_CONN)
 
     # daemon_threads=True so open browser keep-alive connections don't block
     # Python's shutdown when sys.exit() is called from the SIGTERM handler.
@@ -1386,6 +1388,9 @@ def main() -> None:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
+    finally:
+        if _DB_CONN:
+            _DB_CONN.close()
 
 
 if __name__ == "__main__":
