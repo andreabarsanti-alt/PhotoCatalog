@@ -553,43 +553,50 @@ def _decision_stats() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Image serving
+# Image serving — thumbnail with in-memory cache
 # ---------------------------------------------------------------------------
 
+_THUMB_SIZE = (480, 480)
+_thumb_cache: "dict[str, bytes]" = {}   # cache_key → JPEG bytes
+_THUMB_CACHE_MAX = 600                   # ~30 MB at ~50 KB/thumb
+
+
 def _image_response(path: str) -> tuple[int, bytes, str]:
-    """Return (status, body, content_type)."""
+    """Return a resized JPEG thumbnail (max 480 px), cached in memory."""
     p = Path(path)
     if not p.exists():
         return 404, b"not found", "text/plain"
 
-    ext = p.suffix.upper().lstrip(".")
-
-    if ext in _BROWSER_EXTS:
-        mime, _ = mimetypes.guess_type(path)
-        try:
-            return 200, p.read_bytes(), mime or "application/octet-stream"
-        except Exception as e:
-            return 500, str(e).encode(), "text/plain"
-
-    # All non-browser-native formats (HEIC, DNG, RAW, TIFF…) → convert to JPEG
-    if ext in _HEIC_EXTS or ext in _RAW_EXTS:
-        try:
-            import pillow_heif
-            from PIL import Image
-            pillow_heif.register_heif_opener()
-            img = Image.open(path)
-            buf = io.BytesIO()
-            img.convert("RGB").save(buf, "JPEG", quality=85)
-            return 200, buf.getvalue(), "image/jpeg"
-        except Exception as e:
-            return 415, f"Cannot convert {ext}: {e}".encode(), "text/plain"
-
-    # Fallback for anything else
-    mime, _ = mimetypes.guess_type(path)
     try:
-        return 200, p.read_bytes(), mime or "application/octet-stream"
+        mtime = p.stat().st_mtime
+    except OSError:
+        return 404, b"not found", "text/plain"
+
+    cache_key = f"{path}:{mtime}"
+    if cache_key in _thumb_cache:
+        return 200, _thumb_cache[cache_key], "image/jpeg"
+
+    ext = p.suffix.upper().lstrip(".")
+    try:
+        from PIL import Image
+        if ext in _HEIC_EXTS or ext in _RAW_EXTS:
+            import pillow_heif
+            pillow_heif.register_heif_opener()
+        img = Image.open(path)
+        # JPEG draft mode: PIL decodes only to the needed resolution — much faster
+        if getattr(img, "format", None) == "JPEG":
+            img.draft("RGB", _THUMB_SIZE)
+        img.thumbnail(_THUMB_SIZE, Image.LANCZOS)
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, "JPEG", quality=80)
+        data = buf.getvalue()
     except Exception as e:
-        return 500, str(e).encode(), "text/plain"
+        return 415, f"Cannot read {ext}: {e}".encode(), "text/plain"
+
+    if len(_thumb_cache) >= _THUMB_CACHE_MAX:
+        _thumb_cache.pop(next(iter(_thumb_cache)))
+    _thumb_cache[cache_key] = data
+    return 200, data, "image/jpeg"
 
 
 # ---------------------------------------------------------------------------
