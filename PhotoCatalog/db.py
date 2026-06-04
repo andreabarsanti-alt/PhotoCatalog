@@ -1,4 +1,3 @@
-import shutil
 import sqlite3
 from pathlib import Path
 
@@ -154,123 +153,15 @@ LEFT JOIN duplicate_groups fn ON fn.photo_id = p.id AND fn.strategy = 'filename'
 """
 
 
-def is_external_path(path: str) -> bool:
-    """True when the path lives on a /Volumes/ mount (external or network drive)."""
-    try:
-        return Path(path).resolve().parts[:2] == ('/', 'Volumes')
-    except Exception:
-        return False
-
-
-def cache_db_locally(db_path: str) -> str:
-    """
-    Copy a DB from an external drive to ~/Library/Caches/PhotoCatalog/ and
-    return the local cache path.  Checkpoints the WAL first so the copy is
-    self-contained.  If the path is already local, returns db_path unchanged.
-
-    If a local cache already exists and is newer than the external copy (e.g.
-    because a previous run was killed before sync-back), the local cache is
-    reused and a warning is printed rather than overwriting uncommitted work.
-    """
-    if not is_external_path(db_path):
-        return db_path
-    cache_dir = Path.home() / "Library" / "Caches" / "PhotoCatalog"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = str(cache_dir / Path(db_path).name)
-
-    # If the local cache is newer the external was never synced back — reuse it.
-    if Path(cache_path).exists():
-        local_mtime    = Path(cache_path).stat().st_mtime
-        external_mtime = Path(db_path).stat().st_mtime
-        if local_mtime > external_mtime + 2:   # 2-second grace for filesystem clock skew
-            print(
-                f"WARNING: local cache is newer than {Path(db_path).name} on the external drive.\n"
-                f"  Using local cache (a previous run may not have synced back).\n"
-                f"  Delete {cache_path} to force a fresh copy from the drive."
-            )
-            return cache_path
-
-    print(f"External drive detected — caching {Path(db_path).name} locally…")
-    _src = sqlite3.connect(db_path)
-    try:
-        _src.execute("PRAGMA wal_checkpoint(FULL)")
-    except Exception:
-        pass  # proceed with copy even if checkpoint fails; SQLite will recover
-    finally:
-        _src.close()
-    shutil.copy2(db_path, cache_path)
-    return cache_path
-
-
-def sync_db_back(cache_path: str, original_path: str) -> None:
-    """Checkpoint the local cache and copy it back to the original external path."""
-    _c = sqlite3.connect(cache_path)
-    _c.execute("PRAGMA wal_checkpoint(FULL)")
-    _c.close()
-    print(f"Syncing catalog back to {original_path} …")
-    shutil.copy2(cache_path, original_path)
-
-
-class _CachedConnection:
-    """
-    Wraps a sqlite3.Connection opened on a local cache copy.
-    On close(), checkpoints the WAL and syncs the file back to the original path.
-    Used by connect() for single-connection CLI operations (ingest, hash, find).
-    """
-    def __init__(self, conn: sqlite3.Connection, cache_path: str, original_path: str):
-        self._conn          = conn
-        self._cache_path    = cache_path
-        self._original_path = original_path
-
-    def close(self):
-        try:
-            self._conn.execute("PRAGMA wal_checkpoint(FULL)")
-        except Exception:
-            pass
-        self._conn.close()
-        sync_db_back(self._cache_path, self._original_path)
-
-    def sync_checkpoint(self) -> None:
-        """WAL checkpoint + copy to external drive without closing. Safe to call mid-operation."""
-        try:
-            self._conn.execute("PRAGMA wal_checkpoint(FULL)")
-        except Exception:
-            pass
-        sync_db_back(self._cache_path, self._original_path)
-
-    def __getattr__(self, name):
-        return getattr(self._conn, name)
-
-    def __setattr__(self, name, value):
-        if name.startswith('_'):
-            object.__setattr__(self, name, value)
-        else:
-            setattr(self._conn, name, value)
-
-
 def connect(db_path: str) -> sqlite3.Connection:
-    """
-    Open a SQLite connection with tuned PRAGMAs.
-
-    If db_path is on an external /Volumes/ mount the database is first copied to
-    ~/Library/Caches/PhotoCatalog/ and the returned connection points to that
-    local copy.  On close() the local copy is synced back automatically, so all
-    single-connection CLI operations (ingest, hashing, find-duplicates) run at
-    SSD speed without any code changes at call sites.
-
-    serve_duplicates opens many short-lived connections per HTTP request, so it
-    manages the cache lifecycle itself via cache_db_locally() / sync_db_back().
-    """
-    actual_path = cache_db_locally(db_path) if is_external_path(db_path) and Path(db_path).exists() else db_path
-    conn = sqlite3.connect(actual_path)
+    """Open a SQLite connection with tuned PRAGMAs."""
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")   # safe with WAL; ~2x faster writes
     conn.execute("PRAGMA cache_size=-65536")    # 64 MB page cache
     conn.execute("PRAGMA mmap_size=268435456")  # 256 MB memory-mapped I/O
     conn.execute("PRAGMA temp_store=MEMORY")    # temp tables in RAM
-    if actual_path != db_path:
-        return _CachedConnection(conn, actual_path, db_path)  # type: ignore[return-value]
     return conn
 
 

@@ -1435,8 +1435,6 @@ class PhotoCatalogApp(tk.Tk):
 
     def _on_close(self):
         # Terminate any running subprocess (e.g. serve-duplicates) before exiting.
-        # terminate() sends SIGTERM, which triggers sync_db_back via our signal handler.
-        # We wait briefly so the DB sync can finish; force-kill after 5 s if stuck.
         if self._proc and self._proc.poll() is None:
             self._proc.terminate()
             try:

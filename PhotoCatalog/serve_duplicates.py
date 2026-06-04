@@ -13,7 +13,6 @@ import argparse
 import io
 import json
 import mimetypes
-import signal
 import sys
 import threading
 import urllib.parse
@@ -21,7 +20,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from .db import connect, ensure_decisions_table, is_external_path, cache_db_locally, sync_db_back
+from .db import connect, ensure_decisions_table
 
 # ---------------------------------------------------------------------------
 # Globals set at startup
@@ -1370,17 +1369,8 @@ def main() -> None:
 
     original_db = args.db
 
-    # For serve_duplicates, cache the DB once at startup and point all per-request
-    # _conn() calls at the local copy.  sync_db_back() is called at clean shutdown.
-    # (connect() is not used here because it wraps per-connection — too expensive
-    #  to copy the whole DB back on every HTTP request.)
-    _DB_PATH = cache_db_locally(original_db)
+    _DB_PATH = original_db
     ensure_decisions_table(_conn())
-
-    # SIGTERM (sent by the GUI's Stop button) must trigger the finally block so
-    # sync_db_back() runs.  Raising SystemExit propagates through finally; the
-    # default SIGTERM handler would kill the process without any cleanup.
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     # daemon_threads=True so open browser keep-alive connections don't block
     # Python's shutdown when sys.exit() is called from the SIGTERM handler.
@@ -1396,9 +1386,6 @@ def main() -> None:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
-    finally:
-        if _DB_PATH != original_db:
-            sync_db_back(_DB_PATH, original_db)
 
 
 if __name__ == "__main__":
