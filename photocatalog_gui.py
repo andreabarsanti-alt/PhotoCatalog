@@ -1542,19 +1542,28 @@ class PhotoCatalogApp(tk.Tk):
         display = " ".join(f'"{c}"' if " " in c else c for c in cmd)
         self._append(f"$ {display}\n\n")
 
+        # Create the process here (main thread) so self._proc is set before
+        # _on_close or _stop can race against it.
+        proc = subprocess.Popen(
+            (["caffeinate", "-i"] if caffeinate else []) + cmd,
+            cwd=str(SCRIPT_DIR),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        self._proc = proc
+
         def worker():
-            self._proc = subprocess.Popen(
-                (["caffeinate", "-i"] if caffeinate else []) + cmd,
-                cwd=str(SCRIPT_DIR),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-            for line in self._proc.stdout:
+            # Use local `proc` reference so stdout reading is not affected by
+            # self._proc being reassigned when the next command starts.
+            for line in proc.stdout:
                 self._output_q.put(line)
-            self._proc.wait()
-            self._output_q.put(None)
+            proc.wait()
+            # Only signal completion if we are still the current process;
+            # prevents a spurious "Done" when this proc was stopped early.
+            if self._proc is proc:
+                self._output_q.put(None)
 
         threading.Thread(target=worker, daemon=True).start()
 

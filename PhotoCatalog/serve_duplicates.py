@@ -1382,7 +1382,12 @@ def main() -> None:
     # default SIGTERM handler would kill the process without any cleanup.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), _Handler)
+    # daemon_threads=True so open browser keep-alive connections don't block
+    # Python's shutdown when sys.exit() is called from the SIGTERM handler.
+    class _Server(ThreadingHTTPServer):
+        daemon_threads = True
+
+    server = _Server(("127.0.0.1", args.port), _Handler)
     url = f"http://127.0.0.1:{args.port}"
     print(f"Serving at {url}  (Ctrl-C to stop)")
 
