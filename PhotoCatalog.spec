@@ -190,5 +190,7 @@ app = BUNDLE(
         "CFBundleVersion": version,
         "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": False,
+        "NSAppleEventsUsageDescription": "PhotoCatalog needs to control Photos to add photos to albums.",
+        "NSPhotoLibraryUsageDescription": "PhotoCatalog reads your Photos library to build the duplicate catalog.",
     },
 )
