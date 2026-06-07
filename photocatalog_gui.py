@@ -1258,104 +1258,162 @@ class PhotoCatalogApp(tk.Tk):
 
         ttk.Label(
             rf,
-            text="Rewrites all file paths in the catalog when a drive is remounted at a\n"
-                 "different location. No files are moved — only the catalog is updated.",
+            text="Rewrites file paths in the catalog when a drive is remounted at a different\n"
+                 "location. Select an import to scope the rewrite to that source only.",
             justify="left",
         ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
 
-        # ── Current roots list ───────────────────────────────────────────────
-        ttk.Label(rf, text="Paths in catalog:").grid(row=1, column=0, sticky="nw")
+        # ── Imports list ─────────────────────────────────────────────────────
+        ttk.Label(rf, text="Imports:").grid(row=1, column=0, sticky="nw")
         lf = ttk.Frame(rf)
-        lf.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(0, 10))
+        lf.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(0, 4))
         lf.columnconfigure(0, weight=1)
         self._roots_lb = tk.Listbox(
-            lf, height=4, selectmode="browse",
+            lf, height=5, selectmode="browse",
             exportselection=False, font=("Menlo", 11),
         )
-        sb = ttk.Scrollbar(lf, orient="vertical", command=self._roots_lb.yview)
-        self._roots_lb.configure(yscrollcommand=sb.set)
-        self._roots_lb.grid(row=0, column=0, sticky="ew")
-        sb.grid(row=0, column=1, sticky="ns")
-        ttk.Label(lf, text="Click a row to fill Old prefix", foreground="gray",
-                  font=("", 10)).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        vsb = ttk.Scrollbar(lf, orient="vertical",   command=self._roots_lb.yview)
+        hsb = ttk.Scrollbar(lf, orient="horizontal", command=self._roots_lb.xview)
+        self._roots_lb.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self._roots_lb.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
         self._roots_lb.bind("<<ListboxSelect>>", self._on_root_select)
 
-        ttk.Button(rf, text="↺", width=3,
-                   command=self._refresh_roots).grid(row=1, column=2, sticky="ne", padx=(6, 0))
+        btn_col = ttk.Frame(rf)
+        btn_col.grid(row=1, column=2, sticky="ne", padx=(6, 0))
+        ttk.Button(btn_col, text="↺", width=3, command=self._refresh_roots).pack(pady=(0, 4))
+        ttk.Button(btn_col, text="×", width=3, command=self._clear_root_scope).pack()
+
+        # ── Scope indicator ──────────────────────────────────────────────────
+        self._scope_lbl = ttk.Label(rf, text="Scope: all imports", foreground="gray", font=("", 10))
+        self._scope_lbl.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 8))
 
         # ── Old / New prefix ─────────────────────────────────────────────────
-        ttk.Label(rf, text="Old prefix:").grid(row=2, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(rf, text="Old prefix:").grid(row=3, column=0, sticky="w", pady=(0, 4))
         self._rewrite_old = tk.StringVar()
         ttk.Entry(rf, textvariable=self._rewrite_old).grid(
-            row=2, column=1, sticky="ew", padx=(8, 6), pady=(0, 4)
+            row=3, column=1, sticky="ew", padx=(8, 6), pady=(0, 4)
         )
         ttk.Button(
             rf, text="Browse…",
             command=lambda: self._rewrite_old.set(
                 filedialog.askdirectory(title="Select old root folder") or self._rewrite_old.get()
             ),
-        ).grid(row=2, column=2, pady=(0, 4))
+        ).grid(row=3, column=2, pady=(0, 4))
 
-        ttk.Label(rf, text="New prefix:").grid(row=3, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(rf, text="New prefix:").grid(row=4, column=0, sticky="w", pady=(0, 4))
         self._rewrite_new = tk.StringVar()
         ttk.Entry(rf, textvariable=self._rewrite_new).grid(
-            row=3, column=1, sticky="ew", padx=(8, 6), pady=(0, 4)
+            row=4, column=1, sticky="ew", padx=(8, 6), pady=(0, 4)
         )
         ttk.Button(
             rf, text="Browse…",
             command=lambda: self._rewrite_new.set(
                 filedialog.askdirectory(title="Select new root folder") or self._rewrite_new.get()
             ),
-        ).grid(row=3, column=2, pady=(0, 4))
+        ).grid(row=4, column=2, pady=(0, 4))
 
-        # ── Preview label + action buttons ───────────────────────────────────
+        # ── Info label + action buttons ──────────────────────────────────────
         self._rewrite_info = ttk.Label(rf, text="", foreground="gray")
-        self._rewrite_info.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self._rewrite_info.grid(row=5, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         btn_row = ttk.Frame(rf)
-        btn_row.grid(row=4, column=2, sticky="e", pady=(6, 0))
+        btn_row.grid(row=5, column=2, sticky="e", pady=(6, 0))
         ttk.Button(btn_row, text="Preview", command=self._preview_rewrite).pack(
             side="left", padx=(0, 6)
         )
         ttk.Button(btn_row, text="Apply  →", command=self._apply_rewrite).pack(side="left")
 
-        # Auto-refresh when catalog changes
+        # State
+        self._rewrite_scope_cat: str = ""
+        self._roots_data: list[tuple[str, str, str]] = []  # (source_catalog, file_prefix, label)
+
         self.db_path.trace_add("write", lambda *_: self.after(100, self._refresh_roots))
         self.after(200, self._refresh_roots)
 
     @staticmethod
-    def _path_root(path: str) -> str:
-        """Extract volume or top-user root: /Volumes/DISK/… → /Volumes/DISK."""
-        parts = Path(path).parts
-        return str(Path(*parts[:3])) if len(parts) >= 3 else path
+    def _import_info(source_type: str, cat: str) -> tuple[str, str]:
+        """Return (file_prefix, scope_label) for a source_catalog import.
+
+        file_prefix is the path component shared by both source_catalog and
+        source_file for this import — what the user will type as "Old prefix".
+        """
+        if source_type == "MacPhotos":
+            # cat = …/Foo.photoslibrary/database/Photos.sqlite
+            # both source_catalog and source_file live under the bundle root
+            lib_root = str(Path(cat).parent.parent)
+            name = Path(lib_root).name.removesuffix(".photoslibrary")
+            return lib_root, f"MacPhotos: {name}"
+        if source_type == "Lightroom":
+            # cat = …/catalog.lrcat  — files live anywhere on the same volume
+            parts = Path(cat).parts
+            vol_root = str(Path(*parts[:3])) if len(parts) >= 3 else str(Path(cat).parent)
+            return vol_root, f"Lightroom: {Path(cat).stem}"
+        # Folder: source_catalog IS the root folder
+        return cat, f"Folder: {Path(cat).name}"
 
     def _refresh_roots(self):
         db_path = self.db_path.get().strip()
         self._roots_lb.delete(0, "end")
-        self._roots_data: list[str] = []
+        self._roots_data = []
+        self._rewrite_scope_cat = ""
         if not db_path or not Path(db_path).exists():
             return
         try:
             conn = sqlite3.connect(db_path)
-            cats = [r[0] for r in conn.execute(
-                "SELECT DISTINCT source_catalog FROM photos WHERE source_catalog IS NOT NULL"
-            ).fetchall()]
-            roots = sorted({self._path_root(c) for c in cats})
-            for root in roots:
-                n = conn.execute(
-                    "SELECT COUNT(*) FROM photos WHERE source_file LIKE ?",
-                    (root + "/%",),
-                ).fetchone()[0]
-                self._roots_lb.insert("end", f"{root}   ({n:,} photos)")
-                self._roots_data.append(root)
+            rows = conn.execute("""
+                SELECT source_type, source_catalog, COUNT(*)
+                FROM photos
+                WHERE source_catalog IS NOT NULL
+                GROUP BY source_catalog
+                ORDER BY source_type, source_catalog
+            """).fetchall()
             conn.close()
         except Exception:
-            pass
+            return
+        badges = {"MacPhotos": "Photos ", "Lightroom": "LR     ", "Folder": "Folder "}
+        for source_type, cat, n in rows:
+            file_prefix, label = self._import_info(source_type, cat)
+            badge  = badges.get(source_type, source_type[:7].ljust(7))
+            name   = label.split(": ", 1)[1]
+            line   = f"{badge}  {name:<28}  {n:>7,}   {file_prefix}"
+            self._roots_lb.insert("end", line)
+            self._roots_data.append((cat, file_prefix, label))
 
     def _on_root_select(self, _event=None):
         sel = self._roots_lb.curselection()
-        if sel and hasattr(self, "_roots_data") and sel[0] < len(self._roots_data):
-            self._rewrite_old.set(self._roots_data[sel[0]])
+        if not sel or sel[0] >= len(self._roots_data):
+            return
+        cat, file_prefix, label = self._roots_data[sel[0]]
+        self._rewrite_old.set(file_prefix)
+        self._rewrite_scope_cat = cat
+        self._scope_lbl.config(text=f"Scope: {label}", foreground="#007aff")
+        self._rewrite_info.config(text="")
+
+    def _clear_root_scope(self):
+        self._roots_lb.selection_clear(0, "end")
+        self._rewrite_scope_cat = ""
+        self._scope_lbl.config(text="Scope: all imports", foreground="gray")
+        self._rewrite_old.set("")
+        self._rewrite_info.config(text="")
+
+    def _rewrite_count(self, conn: sqlite3.Connection, old: str) -> int:
+        scope = self._rewrite_scope_cat
+        if scope:
+            return conn.execute(
+                "SELECT COUNT(*) FROM photos "
+                "WHERE source_catalog = ? "
+                "  AND (source_file LIKE ? || '/%' OR source_file = ? "
+                "    OR source_catalog LIKE ? || '/%' OR source_catalog = ?)",
+                (scope, old, old, old, old),
+            ).fetchone()[0]
+        return conn.execute(
+            "SELECT COUNT(*) FROM photos "
+            "WHERE source_file LIKE ? || '/%' OR source_file = ? "
+            "   OR source_catalog LIKE ? || '/%' OR source_catalog = ?",
+            (old, old, old, old),
+        ).fetchone()[0]
 
     def _preview_rewrite(self):
         db_path = self.db_path.get().strip()
@@ -1368,14 +1426,9 @@ class PhotoCatalogApp(tk.Tk):
             return
         try:
             conn = sqlite3.connect(db_path)
-            n = conn.execute(
-                "SELECT COUNT(*) FROM photos WHERE source_file LIKE ? OR source_catalog LIKE ?",
-                (old + "/%", old + "/%"),
-            ).fetchone()[0]
+            n = self._rewrite_count(conn, old)
             conn.close()
-            self._rewrite_info.config(
-                text=f"{n:,} photos would be updated.", foreground="gray"
-            )
+            self._rewrite_info.config(text=f"{n:,} photos would be updated.", foreground="gray")
         except Exception as e:
             self._rewrite_info.config(text=f"Error: {e}", foreground="red")
 
@@ -1392,12 +1445,10 @@ class PhotoCatalogApp(tk.Tk):
         if old == new:
             messagebox.showinfo("No change", "Old and new prefix are identical.")
             return
+        scope = self._rewrite_scope_cat
         try:
             conn = sqlite3.connect(db_path)
-            n = conn.execute(
-                "SELECT COUNT(*) FROM photos WHERE source_file LIKE ? OR source_catalog LIKE ?",
-                (old + "/%", old + "/%"),
-            ).fetchone()[0]
+            n = self._rewrite_count(conn, old)
             conn.close()
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -1405,37 +1456,56 @@ class PhotoCatalogApp(tk.Tk):
         if n == 0:
             messagebox.showinfo("No match", f"No photos found with prefix:\n{old}")
             return
+        scope_note = (
+            f"\nScoped to: {self._scope_lbl.cget('text').removeprefix('Scope: ')}\n"
+            if scope else ""
+        )
         if not messagebox.askyesno(
             "Confirm Rewrite",
-            f"Update {n:,} photo paths?\n\n"
+            f"Update {n:,} photo paths?{scope_note}\n\n"
             f"  {old}\n  →  {new}\n\n"
             "This cannot be undone.",
         ):
             return
+        # CASE expression handles both prefix match (sub-paths) and exact match
+        # (needed for Folder imports where source_catalog = the prefix itself).
+        n_len = len(old)
+        sql_scoped = """
+            UPDATE photos SET
+              source_file = CASE
+                WHEN source_file LIKE ? || '/%' OR source_file = ?
+                THEN ? || SUBSTR(source_file, ? + 1) ELSE source_file END,
+              source_catalog = CASE
+                WHEN source_catalog LIKE ? || '/%' OR source_catalog = ?
+                THEN ? || SUBSTR(source_catalog, ? + 1) ELSE source_catalog END
+            WHERE source_catalog = ?
+              AND (source_file    LIKE ? || '/%' OR source_file    = ?
+                OR source_catalog LIKE ? || '/%' OR source_catalog = ?)
+        """
+        sql_global = """
+            UPDATE photos SET
+              source_file = CASE
+                WHEN source_file LIKE ? || '/%' OR source_file = ?
+                THEN ? || SUBSTR(source_file, ? + 1) ELSE source_file END,
+              source_catalog = CASE
+                WHEN source_catalog LIKE ? || '/%' OR source_catalog = ?
+                THEN ? || SUBSTR(source_catalog, ? + 1) ELSE source_catalog END
+            WHERE source_file    LIKE ? || '/%' OR source_file    = ?
+               OR source_catalog LIKE ? || '/%' OR source_catalog = ?
+        """
         try:
-            n_len = len(old)
             conn = sqlite3.connect(db_path)
-            conn.execute(
-                """
-                UPDATE photos SET
-                  source_file = CASE
-                    WHEN source_file LIKE ? || '/%'
-                    THEN ? || SUBSTR(source_file, ? + 1)
-                    ELSE source_file END,
-                  source_catalog = CASE
-                    WHEN source_catalog LIKE ? || '/%'
-                    THEN ? || SUBSTR(source_catalog, ? + 1)
-                    ELSE source_catalog END
-                WHERE source_file    LIKE ? || '/%'
-                   OR source_catalog LIKE ? || '/%'
-                """,
-                (old, new, n_len, old, new, n_len, old, old),
-            )
+            if scope:
+                conn.execute(sql_scoped,
+                    (old, old, new, n_len, old, old, new, n_len,
+                     scope, old, old, old, old))
+            else:
+                conn.execute(sql_global,
+                    (old, old, new, n_len, old, old, new, n_len,
+                     old, old, old, old))
             conn.commit()
             conn.close()
-            self._rewrite_info.config(
-                text=f"Done — {n:,} photos updated.", foreground="green"
-            )
+            self._rewrite_info.config(text=f"Done — {n:,} photos updated.", foreground="green")
             self._refresh_roots()
         except Exception as e:
             messagebox.showerror("Error", str(e))
