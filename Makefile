@@ -29,15 +29,13 @@ dmg: build
 	@rm -rf "$(STAGE)"
 	@mkdir -p "$(STAGE)"
 	@cp -R "$(APP)" "$(STAGE)/"
-	@cp "Setup Permissions.command" "$(STAGE)/"
 	@if command -v create-dmg >/dev/null 2>&1; then \
 		create-dmg \
 			--volname "PhotoCatalog $(VERSION)" \
-			--window-size 660 360 \
+			--window-size 600 300 \
 			--icon-size 100 \
-			--icon "PhotoCatalog.app" 160 160 \
-			--icon "Setup Permissions.command" 160 280 \
-			--app-drop-link 500 160 \
+			--icon "PhotoCatalog.app" 150 150 \
+			--app-drop-link 450 150 \
 			--no-internet-enable \
 			"$(DMG)" \
 			"$(STAGE)"; \
