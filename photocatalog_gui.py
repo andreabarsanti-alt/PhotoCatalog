@@ -912,29 +912,64 @@ class PhotoCatalogApp(tk.Tk):
 
         # ── Section 2: MacPhotos ──────────────────────────────────────────────
         if mac_rows:
-            local_mac = [r for r in mac_rows if not (r["source_file"] or "").startswith("macphotos://")]
-            cloud_mac = [r for r in mac_rows if     (r["source_file"] or "").startswith("macphotos://")]
+            mac_by_cat: dict[str, list] = {}
+            for r in mac_rows:
+                mac_by_cat.setdefault(r["source_catalog"] or "", []).append(r)
+            cat_paths = sorted(mac_by_cat.keys())
+            n_libs = len(cat_paths)
 
-            mf = ttk.LabelFrame(dlg, text=f"MacPhotos  —  {len(mac_rows)} photos", padding=10)
+            mf = ttk.LabelFrame(
+                dlg,
+                text=f"MacPhotos  —  {len(mac_rows)} photos  ({n_libs} librar{'ies' if n_libs != 1 else 'y'})",
+                padding=10,
+            )
             mf.grid(row=row_idx, column=0, sticky="ew", **pad)
-            mf.columnconfigure(1, weight=1)
+            mf.columnconfigure(0, weight=1)
             row_idx += 1
 
-            ttk.Label(mf, text="Add to Photos album:").grid(row=0, column=0, sticky="w")
-            mac_album_var = tk.StringVar(value="PhotoCatalog Discards")
-            ttk.Entry(mf, textvariable=mac_album_var).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+            mf_row = 0
+            for cat_idx, cat_path in enumerate(cat_paths):
+                cat_rows = mac_by_cat[cat_path]
+                local_cat = [r for r in cat_rows if not (r["source_file"] or "").startswith("macphotos://")]
+                cloud_cat = [r for r in cat_rows if     (r["source_file"] or "").startswith("macphotos://")]
 
-            detail = f"{len(local_mac)} local"
-            if cloud_mac:
-                detail += f"  +  {len(cloud_mac)} iCloud-only"
-            ttk.Label(mf, text=detail, foreground="gray").grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
-            ttk.Label(mf, text="⚠  Photos.app must be running.", foreground="#ff9500").grid(
-                row=2, column=0, columnspan=2, sticky="w", pady=(2, 0)
-            )
-            ttk.Button(
-                mf, text=f"Add {len(mac_rows)} to album  →",
-                command=lambda rows=mac_rows, av=mac_album_var: self._execute_clean_macphotos(dlg, db_path, rows, av),
-            ).grid(row=3, column=0, columnspan=2, sticky="e", pady=(8, 0))
+                # ".../Foo.photoslibrary/database/Photos.sqlite" → "Foo"
+                try:
+                    lib_name = Path(cat_path).parent.parent.name.removesuffix(".photoslibrary")
+                except Exception:
+                    lib_name = cat_path or "Unknown"
+
+                if cat_idx > 0:
+                    ttk.Separator(mf, orient="horizontal").grid(
+                        row=mf_row, column=0, sticky="ew", pady=(6, 4)
+                    )
+                    mf_row += 1
+
+                cf = ttk.Frame(mf)
+                cf.grid(row=mf_row, column=0, sticky="ew")
+                cf.columnconfigure(1, weight=1)
+                mf_row += 1
+
+                if n_libs > 1:
+                    ttk.Label(cf, text=lib_name, font=("", 11, "bold")).grid(
+                        row=0, column=0, columnspan=2, sticky="w"
+                    )
+                ttk.Label(cf, text="Add to Photos album:").grid(row=1, column=0, sticky="w", pady=(4 if n_libs > 1 else 0, 0))
+                mac_album_var = tk.StringVar(value="PhotoCatalog Discards")
+                ttk.Entry(cf, textvariable=mac_album_var).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(4 if n_libs > 1 else 0, 0))
+
+                detail = f"{len(local_cat)} local"
+                if cloud_cat:
+                    detail += f"  +  {len(cloud_cat)} iCloud-only"
+                ttk.Label(cf, text=detail, foreground="gray").grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                warn = "⚠  Photos.app must have this library open." if n_libs > 1 else "⚠  Photos.app must be running."
+                ttk.Label(cf, text=warn, foreground="#ff9500").grid(
+                    row=3, column=0, columnspan=2, sticky="w", pady=(2, 0)
+                )
+                ttk.Button(
+                    cf, text=f"Add {len(cat_rows)} to album  →",
+                    command=lambda rows=cat_rows, av=mac_album_var: self._execute_clean_macphotos(dlg, db_path, rows, av),
+                ).grid(row=4, column=0, columnspan=2, sticky="e", pady=(8, 0))
 
         # ── Section 3: Lightroom ──────────────────────────────────────────────
         if lr_rows:
