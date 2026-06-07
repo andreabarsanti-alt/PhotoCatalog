@@ -9,6 +9,7 @@ PYTHON  := .venv/bin/python3
 VERSION := $(shell $(PYTHON) -c "from PhotoCatalog import __version__; print(__version__)")
 APP     := dist/PhotoCatalog.app
 DMG     := dist/PhotoCatalog-$(VERSION).dmg
+STAGE   := dist/dmg_stage
 
 .PHONY: all build dmg release clean
 
@@ -25,24 +26,30 @@ dmg: build
 	@echo "Creating DMG…"
 	@mkdir -p dist
 	@rm -f "$(DMG)"
+	@rm -rf "$(STAGE)"
+	@mkdir -p "$(STAGE)"
+	@cp -R "$(APP)" "$(STAGE)/"
+	@cp "Setup Permissions.command" "$(STAGE)/"
 	@if command -v create-dmg >/dev/null 2>&1; then \
 		create-dmg \
 			--volname "PhotoCatalog $(VERSION)" \
-			--window-size 600 300 \
+			--window-size 660 360 \
 			--icon-size 100 \
-			--icon "PhotoCatalog.app" 150 150 \
-			--app-drop-link 450 150 \
+			--icon "PhotoCatalog.app" 160 160 \
+			--icon "Setup Permissions.command" 160 280 \
+			--app-drop-link 500 160 \
 			--no-internet-enable \
 			"$(DMG)" \
-			"$(APP)"; \
+			"$(STAGE)"; \
 	else \
 		echo "create-dmg not found — building plain DMG (no drag-to-install arrow)."; \
 		echo "Run:  brew install create-dmg  for a nicer DMG."; \
 		hdiutil create -volname "PhotoCatalog $(VERSION)" \
-			-srcfolder "$(APP)" \
+			-srcfolder "$(STAGE)" \
 			-ov -format UDZO \
 			"$(DMG)"; \
 	fi
+	@rm -rf "$(STAGE)"
 	@echo "Done → $(DMG)"
 
 # ── Publish GitHub release ───────────────────────────────────────────────────
