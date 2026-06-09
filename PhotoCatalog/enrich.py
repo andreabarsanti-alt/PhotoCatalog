@@ -30,7 +30,8 @@ def _pending_rows(conn: sqlite3.Connection, where_col: str) -> list:
           AND  UPPER(COALESCE(file_type, '')) NOT IN ({movies})
     """.format(col=where_col,
                movies=", ".join(f"'{t}'" for t in _MOVIE_TYPES))).fetchall()
-    return [r for r in rows if Path(r["source_file"]).is_file()]
+    return [r for r in rows if Path(r["source_file"]).is_file()
+            and Path(r["source_file"]).suffix.lstrip(".").upper() not in _MOVIE_TYPES]
 
 
 def _run_hash_pool(pending: list, n_workers: int, hash_fn, update_sql: str,
