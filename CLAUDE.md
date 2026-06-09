@@ -76,7 +76,7 @@ Folder ingestion is safe to interrupt and resume:
 - Progress bar shows 0→100% of remaining work; prints "Resuming: N already ingested, M remaining"
 
 ## find_groups() — signal-based duplicate detection (find_duplicates.py)
-Seven signals, all computed for every group and stored in `match_info`:
+Eight signals, all computed for every group and stored in `match_info`:
 - `phash` — exact perceptual hash match (hash_size=16)
 - `fuzzy` — Hamming distance ≤ 10 on hash_size=8 hash (near-duplicates, light edits)
 - `dims`  — rotation-aware (min, max) of width/height
@@ -84,8 +84,9 @@ Seven signals, all computed for every group and stored in `match_info`:
 - `type`  — file_type
 - `size`  — file_size
 - `name`  — common filename stem + date minute
+- `blank` — all photos have a degenerate perceptual hash (< 10 bits set), indicating uniform/blank images
 
-`score = (10 + n_others) if phash else n_others` — groups inserted in descending score order.
+`score = (10 + n_others) if phash else n_others` — groups inserted in descending score order. `blank` does not contribute to score.
 
 **Logic modes**:
 - `OR`  — union-find: photos are connected if they match on ANY selected signal
@@ -95,7 +96,7 @@ Seven signals, all computed for every group and stored in `match_info`:
 
 ## Web UI filters (serve_duplicates.py)
 Signal filter badges in the left pane narrow the group list in real time:
-- `pHash`, `Fuzzy`, `Dims`, `Date`, `Type`, `Size`, `Name` — signal badges (from match_info; all 7 always present)
+- `pHash`, `Fuzzy`, `Dims`, `Date`, `Type`, `Size`, `Name`, `Blank` — signal badges (from match_info; all 8 always present)
 - `Unique` — show groups already reduced to a single survivor (resolved groups)
 - `Video` — show only groups containing at least one video file (MOV, MP4, M4V, AVI, MKV…)
 

@@ -77,7 +77,7 @@ def _all_groups() -> list[dict]:
             "discard_count": r["discard_count"],
             "label":        label or f"group {r['group_id']}",
             "score":        mi.get("score"),
-            "signals":      {k: mi[k] for k in ("phash","fuzzy","dims","date","type","size","name") if k in mi},
+            "signals":      {k: mi[k] for k in ("phash","fuzzy","dims","date","type","size","name","blank") if k in mi},
             "has_video":    bool(r["has_video"]),
         })
     result.sort(key=lambda g: (
@@ -205,7 +205,7 @@ def _group_detail(strategy: str, group_id: int) -> dict:
             print(f"Warning: could not parse match_info: {e}", file=sys.stderr)
 
     # Separate the signals dict from the rest of match_info for the UI
-    signals = {k: raw_mi[k] for k in ("phash","fuzzy","dims","date","type","size","name") if k in raw_mi}
+    signals = {k: raw_mi[k] for k in ("phash","fuzzy","dims","date","type","size","name","blank") if k in raw_mi}
     match_info = {k: v for k, v in raw_mi.items() if k not in signals}
     if signals:
         match_info["signals"] = signals
@@ -808,6 +808,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
 /* signal grid in group header */
 .sig-grid { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.bulk-actions { display: flex; gap: 6px; margin-top: 8px; }
 .sig-cell { display: flex; flex-direction: column; align-items: center;
             background: #fff; border-radius: 8px; padding: 7px 12px;
             font-size: 12px; font-weight: 600; min-width: 52px;
@@ -823,7 +824,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
 .photo-card { background: #fff; border-radius: 12px; overflow: hidden;
               box-shadow: 0 1px 4px rgba(0,0,0,.10); width: 280px; flex-shrink: 0; }
-.photo-thumb { width: 100%; height: 200px; object-fit: cover;
+.photo-thumb { width: 100%; height: 200px; object-fit: contain;
                background: #e5e5ea; display: block; }
 .thumb-placeholder { width: 100%; height: 200px; display: flex; flex-direction: column;
                      align-items: center; justify-content: center;
@@ -926,6 +927,7 @@ video.photo-thumb { background: #000; }
         <span class="sf" data-sig="type">Type</span>
         <span class="sf" data-sig="size">Size</span>
         <span class="sf" data-sig="name">Name</span>
+        <span class="sf" data-sig="blank">Blank</span>
         <span class="sf sf-unique" id="btn-unique" title="Show groups resolved to a single survivor">Unique</span>
         <span class="sf sf-video"  id="btn-video"  title="Show only groups containing videos">Video</span>
       </div>
@@ -947,8 +949,8 @@ let currentDecisions = {};   // photo_id -> action, for photos in the active gro
 let showResolved   = false;  // when false, hide groups with ≤1 non-discarded photo
 let showOnlyVideo  = false;
 
-const SIGNALS   = ['phash','fuzzy','dims','date','type','size','name'];
-const SIG_LABEL = {phash:'pHash', fuzzy:'Fuzzy', dims:'Dims', date:'Date', type:'Type', size:'Size', name:'Name'};
+const SIGNALS   = ['phash','fuzzy','dims','date','type','size','name','blank'];
+const SIG_LABEL = {phash:'pHash', fuzzy:'Fuzzy', dims:'Dims', date:'Date', type:'Type', size:'Size', name:'Name', blank:'Blank'};
 
 // ── load data ────────────────────────────────────────────────────────────────
 function refreshGroups() {
@@ -1097,6 +1099,11 @@ function renderDetail(strategy, group_id, data) {
     <div id="group-header">
       <h2>#${group_id} &mdash; ${photos.length} photos</h2>
       <div class="sig-grid">${sigGrid}</div>
+      <div class="bulk-actions">
+        <button class="action-btn" onclick="decideAll('keep')">Keep all</button>
+        <button class="action-btn" onclick="decideAll('discard')">Discard all</button>
+        <button class="action-btn" onclick="decideAll(null)">Clear all</button>
+      </div>
     </div>
     <div id="photo-grid">`;
 
@@ -1164,22 +1171,7 @@ function decide(photoId, action) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({photo_id: photoId, action: action})
   }).then(r => r.json()).then(() => {
-    // update in-memory decision
-    if (action) currentDecisions[photoId] = action;
-    else delete currentDecisions[photoId];
-
-    // update card visual
-    const card = document.getElementById('card-' + photoId);
-    if (card) {
-      card.className = action === 'keep'    ? 'photo-card card-keep'
-                     : action === 'discard' ? 'photo-card card-discard'
-                     : 'photo-card';
-      card.querySelector('.btn-keep')?.classList.toggle('active',    action === 'keep');
-      card.querySelector('.btn-discard')?.classList.toggle('active', action === 'discard');
-      if (hideDiscarded) card.style.display = action === 'discard' ? 'none' : '';
-    }
-
-    // update discard_count for this group in allGroups and re-render list
+    decide_update_card(photoId, action);
     if (activeKey) {
       const photos = window._currentPhotos || [];
       const discardCount = photos.filter(p => currentDecisions[p.id] === 'discard').length;
@@ -1191,6 +1183,39 @@ function decide(photoId, action) {
   });
 }
 
+
+function decideAll(action) {
+  const photos = window._currentPhotos || [];
+  Promise.all(photos.map(p =>
+    fetch('/api/decide', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({photo_id: p.id, action: action})
+    }).then(r => r.json()).then(() => decide_update_card(p.id, action))
+  )).then(() => {
+    if (activeKey) {
+      const discardCount = photos.filter(p => currentDecisions[p.id] === 'discard').length;
+      const [st, gid] = activeKey.split('/');
+      const g = allGroups.find(g => g.strategy === st && g.group_id === +gid);
+      if (g) { g.discard_count = discardCount; renderList(); }
+    }
+    loadStats();
+  });
+}
+
+function decide_update_card(photoId, action) {
+  if (action) currentDecisions[photoId] = action;
+  else delete currentDecisions[photoId];
+  const card = document.getElementById('card-' + photoId);
+  if (card) {
+    card.className = action === 'keep'    ? 'photo-card card-keep'
+                   : action === 'discard' ? 'photo-card card-discard'
+                   : 'photo-card';
+    card.querySelector('.btn-keep')?.classList.toggle('active',    action === 'keep');
+    card.querySelector('.btn-discard')?.classList.toggle('active', action === 'discard');
+    if (hideDiscarded) card.style.display = action === 'discard' ? 'none' : '';
+  }
+}
 
 function resetDecisions() {
   if (!confirm('Clear ALL keep/discard decisions?')) return;

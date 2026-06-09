@@ -7,7 +7,7 @@ Run from the repo root:
     python -m PhotoCatalog.find_duplicates --db catalog.db --signal phash dims date --logic AND --keep-resolved
 
 Every run writes to strategy='groups' and clears existing unresolved groups first.
-match_info always contains all 7 signal results so the review UI can filter freely.
+match_info always contains all 8 signal results so the review UI can filter freely.
 """
 import argparse
 import json
@@ -23,7 +23,8 @@ from .db import connect, init_db
 
 
 _FUZZY_HAMMING = 10   # Hamming distance threshold for perceptual_hash_small (64-bit)
-VALID_SIGNALS  = ('phash', 'fuzzy', 'dims', 'date', 'type', 'size', 'name')
+_BLANK_BITS    = 10   # hashes with fewer set bits than this are considered degenerate
+VALID_SIGNALS  = ('phash', 'fuzzy', 'dims', 'date', 'type', 'size', 'name', 'blank')
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +33,11 @@ VALID_SIGNALS  = ('phash', 'fuzzy', 'dims', 'date', 'type', 'size', 'name')
 
 def _hamming(a: int, b: int) -> int:
     return (a ^ b).bit_count()
+
+
+def _is_blank(p) -> bool:
+    h = p["perceptual_hash"]
+    return bool(h) and bin(int(h, 16)).count('1') < _BLANK_BITS
 
 
 def _stem(filename: str | None) -> str | None:
@@ -120,12 +126,15 @@ def _score_group(pids: list, photos: dict) -> tuple[int, dict]:
             if fuzzy:
                 break
 
+    blank_ok = all(_is_blank(p) for p in group)
+
     n_other = sum([dims_ok, date_ok, type_ok, size_ok, name_ok, fuzzy])
     score   = (10 + n_other) if phash else n_other
 
     return score, {
         "phash": phash, "fuzzy": fuzzy, "dims": dims_ok,
         "date": date_ok, "type": type_ok, "size": size_ok, "name": name_ok,
+        "blank": blank_ok,
     }
 
 
@@ -153,6 +162,8 @@ def _bucket_key(sig: str, p) -> object:
             return None
         s = Path(fn).stem.lower()
         return (s, d[:16]) if s else None
+    if sig == 'blank':
+        return True if _is_blank(p) else None
     return None
 
 
