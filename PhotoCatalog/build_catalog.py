@@ -91,14 +91,6 @@ def main() -> None:
         print(f"Inserted : {inserted}")
         print(f"Skipped  : {skipped} (already in catalog)")
 
-        if not args.no_hash:
-            print()
-            from .enrich import add_perceptual_hashes
-            hashed, failed = add_perceptual_hashes(conn, workers=args.workers)
-            print(f"Hashed   : {hashed}")
-            if failed:
-                print(f"Failed   : {failed} (unreadable files)")
-
         if args.download:
             print()
             from .enrich import download_cloud_photos
@@ -113,6 +105,14 @@ def main() -> None:
             print(f"Downloaded : {ok}")
             if failed:
                 print(f"Failed     : {failed}")
+
+        if not args.no_hash:
+            print()
+            from .enrich import add_perceptual_hashes
+            hashed, failed = add_perceptual_hashes(conn, workers=args.workers)
+            print(f"Hashed   : {hashed}")
+            if failed:
+                print(f"Failed   : {failed} (unreadable files)")
 
 
     except Exception as e:

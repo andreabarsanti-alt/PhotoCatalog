@@ -112,7 +112,9 @@ def add_perceptual_hashes(conn: sqlite3.Connection, workers: int = 0) -> tuple[i
     try:
         import imagehash
         import pillow_heif
+        from PIL import ImageFile
         pillow_heif.register_heif_opener()
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
     except ImportError as e:
         raise ImportError(f"Required: pip install imagehash Pillow pillow-heif  —  {e}")
 
@@ -154,7 +156,9 @@ def add_fuzzy_hashes(conn: sqlite3.Connection, workers: int = 0) -> tuple[int, i
     try:
         import imagehash
         import pillow_heif
+        from PIL import ImageFile
         pillow_heif.register_heif_opener()
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
     except ImportError as e:
         raise ImportError(f"Required: pip install imagehash Pillow pillow-heif  —  {e}")
 
@@ -223,6 +227,9 @@ def download_cloud_photos(
         query += f" LIMIT {limit}"
 
     pending = conn.execute(query).fetchall()
+    if not pending:
+        return 0, 0
+
     total = len(pending)
     print(f"Downloading {total} iCloud photos to {dest} ...")
     print("  Note: Photos.app must be running for iCloud download to work.")
