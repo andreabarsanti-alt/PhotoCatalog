@@ -317,6 +317,68 @@ def _apply_prefer_type(pattern: str, allowed: set | None = None, negate: bool = 
     return _apply_prefer(pattern, "type", allowed, negate=negate)
 
 
+def _apply_prefer_field(column: str, pattern: str, allowed: set | None = None,
+                         negate: bool = False) -> dict:
+    """Custom-metadata version of _apply_prefer: match against any whitelisted photos column.
+
+    Lets the user type both the field (chosen from _COLS, shown via _LABELS) and the
+    pattern to match, then applies the same keep/discard-matching logic as the
+    built-in prefer filename/path/type/date buttons.
+
+    negate=False (default): discard photos whose `column` does NOT match — "prefer matching"
+    negate=True:            discard photos whose `column` DOES match     — "avoid matching"
+    """
+    if column not in _COLS:
+        raise ValueError(f"Unknown field: {column!r}")
+    import re
+    from collections import defaultdict
+    try:
+        rx = re.compile(pattern, re.IGNORECASE)
+    except re.error as e:
+        raise ValueError(f"Invalid regex: {e}")
+
+    db = _conn()
+    # column is validated against the _COLS whitelist above, so it's safe to interpolate.
+    rows = db.execute(f"""
+        SELECT dg.strategy, dg.group_id,
+               p.id AS photo_id, p.{column} AS field_value
+        FROM   duplicate_groups dg
+        JOIN   photos p ON p.id = dg.photo_id
+        LEFT JOIN decisions dec ON dec.photo_id = p.id
+        WHERE  dec.photo_id IS NULL
+    """).fetchall()
+
+    groups: dict = defaultdict(list)
+    for r in rows:
+        groups[(r["strategy"], r["group_id"])].append(r)
+
+    discarded = 0
+    for key, photos in groups.items():
+        if allowed is not None and key not in allowed:
+            continue
+        if len(photos) <= 1:
+            continue
+        matching, non_matching = [], []
+        for p in photos:
+            target = "" if p["field_value"] is None else str(p["field_value"])
+            (matching if rx.search(target) else non_matching).append(p)
+        if not matching or not non_matching:
+            continue
+        # negate=False → discard non-matching (prefer matching)
+        # negate=True  → discard matching     (avoid matching)
+        to_discard = matching if negate else non_matching
+        for p in to_discard:
+            db.execute("""
+                INSERT INTO decisions (photo_id, action) VALUES (?, 'discard')
+                ON CONFLICT (photo_id) DO UPDATE
+                    SET action = 'discard', decided_at = datetime('now')
+            """, (p["photo_id"],))
+            discarded += 1
+
+    db.commit()
+    return {"ok": True, "discarded": discarded}
+
+
 def _keep_best(metric: str, allowed: set | None = None) -> dict:
     """Among undecided photos in each group, discard all but the best by metric.
 
@@ -620,6 +682,11 @@ class _Handler(BaseHTTPRequestHandler):
             data = json.dumps(_all_groups()).encode()
             self._send(200, data, "application/json")
 
+        elif path == "/api/fields":
+            # Metadata columns available for the "custom field" prefer filter.
+            fields = [{"value": c, "label": _LABELS.get(c, c)} for c in _COLS if c != "id"]
+            self._send(200, json.dumps(fields).encode(), "application/json")
+
         elif path.startswith("/api/group/"):
             # /api/group/{strategy}/{group_id}
             parts = path.split("/")
@@ -692,6 +759,13 @@ class _Handler(BaseHTTPRequestHandler):
                 elif action == "prefer_type":
                     result = _apply_prefer_type(payload.get("pattern", ""), allowed, negate=negate)
                     self._send(200, json.dumps(result).encode(), "application/json")
+                elif action == "prefer_field":
+                    column = payload.get("field", "")
+                    if column not in _COLS:
+                        self._send(400, json.dumps({"error": "unknown field"}).encode(), "application/json")
+                    else:
+                        result = _apply_prefer_field(column, payload.get("pattern", ""), allowed, negate=negate)
+                        self._send(200, json.dumps(result).encode(), "application/json")
                 elif action == "prefer_resolution":
                     result = _keep_best("resolution", allowed)
                     self._send(200, json.dumps(result).encode(), "application/json")
@@ -883,8 +957,12 @@ video.photo-thumb { background: #000; }
     <button class="action-btn" onclick="togglePrefer('date')">Prefer date&hellip;</button>
     <button class="action-btn" onclick="instantAction('prefer_resolution')">Prefer higher resolution</button>
     <button class="action-btn" onclick="instantAction('prefer_bigger')">Prefer bigger</button>
+    <button class="action-btn" onclick="togglePrefer('custom')">Custom field&hellip;</button>
   </div>
   <div id="prefer-row" style="display:none;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">
+    <select id="prefer-field-select" style="display:none;padding:4px 8px;border-radius:6px;border:1px solid #555;
+                  background:#2c2c2e;color:#fff;font-size:12px;outline:none"
+            onchange="_updatePreferLabel()"></select>
     <span id="prefer-label" style="color:#8e8e93;font-size:11px"></span>
     <input id="prefer-input" type="text" placeholder='Python regex, case-insensitive'
            style="padding:4px 8px;border-radius:6px;border:1px solid #555;background:#2c2c2e;
@@ -961,6 +1039,22 @@ function refreshGroups() {
 }
 refreshGroups();
 loadStats();
+loadFields();
+
+let FIELD_LABELS = {};
+
+function loadFields() {
+  fetch('/api/fields').then(r => r.json()).then(fields => {
+    const sel = document.getElementById('prefer-field-select');
+    fields.forEach(f => {
+      FIELD_LABELS[f.value] = f.label;
+      const opt = document.createElement('option');
+      opt.value = f.value;
+      opt.textContent = f.label;
+      sel.appendChild(opt);
+    });
+  });
+}
 
 function loadStats() {
   fetch('/api/stats').then(r => r.json()).then(s => {
@@ -1273,7 +1367,9 @@ function _updatePreferLabel() {
     path:     'full path',
     type:     'file type (e.g. DNG, JPEG)',
   };
-  const base = baseLabels[_preferField] || '';
+  const base = _preferField === 'custom'
+    ? (FIELD_LABELS[document.getElementById('prefer-field-select').value] || 'field')
+    : (baseLabels[_preferField] || '');
   const verb = _preferNegate ? 'Discard matching' : 'Keep matching';
   document.getElementById('prefer-label').textContent = verb + ' ' + base + ':';
   const btn = document.getElementById('prefer-not-btn');
@@ -1307,7 +1403,9 @@ function togglePrefer(field) {
   }
 
   const isFilename = field === 'filename';
+  const isCustom   = field === 'custom';
   document.getElementById('prefer-input').value = '';
+  document.getElementById('prefer-field-select').style.display = isCustom ? '' : 'none';
   _updatePreferLabel();
   document.getElementById('prefer-len-sep').style.display      = isFilename ? '' : 'none';
   document.getElementById('prefer-shorter-btn').style.display  = isFilename ? '' : 'none';
@@ -1321,11 +1419,17 @@ function applyPrefer() {
   const pattern = document.getElementById('prefer-input').value.trim();
   if (!pattern || !_preferField) return;
   const actionMap = {filename: 'prefer_filename', path: 'prefer_path', type: 'prefer_type'};
-  const action = actionMap[_preferField] || 'prefer_filename';
+  const action = _preferField === 'custom' ? 'prefer_field' : (actionMap[_preferField] || 'prefer_filename');
+  const body = {action, pattern, negate: _preferNegate, groups: visibleGroups()};
+  if (_preferField === 'custom') {
+    const field = document.getElementById('prefer-field-select').value;
+    if (!field) return;
+    body.field = field;
+  }
   fetch('/api/auto-select', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({action, pattern, negate: _preferNegate, groups: visibleGroups()})
+    body: JSON.stringify(body)
   })
   .then(r => r.json())
   .then(data => {
